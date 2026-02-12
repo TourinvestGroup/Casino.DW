@@ -342,21 +342,42 @@ SOURCE_TABLES = [
         "watermark_type": "int",
         "lookback_days": DEFAULT_LOOKBACK_DAYS,
         "select_sql": """
-            SELECT idPlayersTracking, timeStart, RealDrop, HandHold, CashOut, averBet
+            SELECT idPlayersTracking, timeStart, idPlayerSession, timeFinish, idTable, idGame,
+                   idSlot, RealDrop, ChipsIn, ChipsOut, HandHold, CashOut, averBet,
+                   isDeleted, Created, Modified, row_Version
             FROM Manage.PlayerSessions
             WHERE ((? IS NULL OR idPlayersTracking > ?) OR CAST(timeStart AS date) >= ?)
         """,
         "target_sql": """
             INSERT INTO bronze.manage_player_sessions_raw
-                (idplayerstracking, timestart, realdrop, handhold, cashout, averbet)
-            VALUES (%s, %s, %s, %s, %s, %s)
+                (idplayerstracking, timestart, idplayersession, timefinish, idtable, idgame,
+                 idslot, realdrop, chipsin, chipsout, handhold, cashout, averbet,
+                 isdeleted, created, modified, row_version)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (idplayerstracking, timestart) DO UPDATE SET
+                idplayersession = EXCLUDED.idplayersession,
+                timefinish = EXCLUDED.timefinish,
+                idtable = EXCLUDED.idtable,
+                idgame = EXCLUDED.idgame,
+                idslot = EXCLUDED.idslot,
                 realdrop = EXCLUDED.realdrop,
+                chipsin = EXCLUDED.chipsin,
+                chipsout = EXCLUDED.chipsout,
                 handhold = EXCLUDED.handhold,
                 cashout = EXCLUDED.cashout,
                 averbet = EXCLUDED.averbet,
+                isdeleted = EXCLUDED.isdeleted,
+                created = EXCLUDED.created,
+                modified = EXCLUDED.modified,
+                row_version = EXCLUDED.row_version,
                 _loaded_at_utc = now()
         """,
+        "row_mapper": lambda row: (
+            row[0], row[1], row[2], row[3], row[4], row[5],
+            row[6], row[7], row[8], row[9], row[10], row[11], row[12],
+            None if row[13] is None else bool(row[13]),
+            row[14], row[15], row[16],
+        ),
         "watermark_getter": lambda row: row[0],
     },
     {

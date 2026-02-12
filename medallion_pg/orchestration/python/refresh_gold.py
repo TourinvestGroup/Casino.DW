@@ -31,6 +31,12 @@ def main():
                 """,
                 (args.from_date, args.to_date, args.agent_id),
             )
+            cur.execute(
+                """
+                SELECT gold.sp_load_session_marts(%s, %s)
+                """,
+                (args.from_date, args.to_date),
+            )
         conn.commit()
 
     print(

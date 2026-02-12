@@ -41,6 +41,18 @@ FROM gold.fn_membership_period(
 ORDER BY totaldrop_clean DESC;
 ```
 
+Additional new marts (additive, existing `gold.fact_membership_day` unchanged):
+
+```sql
+SELECT *
+FROM gold.fact_session_day_by_table_game
+WHERE gamingday BETWEEN DATE '2026-01-01' AND DATE '2026-01-31';
+
+SELECT *
+FROM gold.fact_session_day_by_agent_group
+WHERE gamingday BETWEEN DATE '2026-01-01' AND DATE '2026-01-31';
+```
+
 ## 3) Daily Bronze feed (Option 2)
 
 Implemented strategy:
@@ -80,6 +92,10 @@ Gold refresh only:
 ```bash
 py -3.12 refresh_gold.py --from-date 2026-01-01 --to-date 2026-01-31
 ```
+
+This refresh now loads:
+- existing `gold.fact_membership_day`
+- new session marts (`gold.fact_session_day_by_table_game`, `gold.fact_session_day_by_agent_group`)
 
 Bronze + Gold in one command:
 

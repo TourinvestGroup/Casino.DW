@@ -130,3 +130,137 @@ WHERE d.gamingday >= p_from_date
     AND (p_agent_id IS NULL OR d.idagent = p_agent_id)
 GROUP BY d.membership;
 $$;
+
+CREATE TABLE IF NOT EXISTS gold.fact_session_day_by_table_game (
+    gamingday            date NOT NULL,
+    idtable              int NOT NULL,
+    idgame               int NOT NULL,
+    sessionscnt          bigint NOT NULL,
+    memberscnt           bigint NOT NULL,
+    total_realdrop       numeric(19,4) NOT NULL,
+    total_handhold       numeric(19,4) NOT NULL,
+    total_cashout        numeric(19,4) NOT NULL,
+    total_chipsin        numeric(19,4) NOT NULL,
+    total_chipsout       numeric(19,4) NOT NULL,
+    avg_averbet          numeric(19,4) NOT NULL,
+    loaded_at_utc        timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (gamingday, idtable, idgame)
+);
+
+CREATE TABLE IF NOT EXISTS gold.fact_session_day_by_agent_group (
+    gamingday            date NOT NULL,
+    idagentgroup         int NOT NULL,
+    idagent              int,
+    sessionscnt          bigint NOT NULL,
+    memberscnt           bigint NOT NULL,
+    total_realdrop       numeric(19,4) NOT NULL,
+    total_handhold       numeric(19,4) NOT NULL,
+    total_cashout        numeric(19,4) NOT NULL,
+    total_chipsin        numeric(19,4) NOT NULL,
+    total_chipsout       numeric(19,4) NOT NULL,
+    avg_averbet          numeric(19,4) NOT NULL,
+    loaded_at_utc        timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (gamingday, idagentgroup)
+);
+
+CREATE OR REPLACE FUNCTION gold.sp_load_fact_session_day_by_table_game(
+    p_from_date date,
+    p_to_date   date
+)
+RETURNS void
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    DELETE FROM gold.fact_session_day_by_table_game
+    WHERE gamingday >= p_from_date
+      AND gamingday <= p_to_date;
+
+    INSERT INTO gold.fact_session_day_by_table_game (
+        gamingday,
+        idtable,
+        idgame,
+        sessionscnt,
+        memberscnt,
+        total_realdrop,
+        total_handhold,
+        total_cashout,
+        total_chipsin,
+        total_chipsout,
+        avg_averbet
+    )
+    SELECT
+        s.gamingday,
+        COALESCE(s.idtable, -1) AS idtable,
+        COALESCE(s.idgame, -1) AS idgame,
+        COUNT(*)::bigint AS sessionscnt,
+        COUNT(DISTINCT s.membership)::bigint AS memberscnt,
+        SUM(COALESCE(s.realdrop, 0.0))::numeric(19,4) AS total_realdrop,
+        SUM(COALESCE(s.handhold, 0.0))::numeric(19,4) AS total_handhold,
+        SUM(COALESCE(s.cashout, 0.0))::numeric(19,4) AS total_cashout,
+        SUM(COALESCE(s.chipsin, 0.0))::numeric(19,4) AS total_chipsin,
+        SUM(COALESCE(s.chipsout, 0.0))::numeric(19,4) AS total_chipsout,
+        COALESCE(AVG(COALESCE(s.averbet, 0.0)), 0.0)::numeric(19,4) AS avg_averbet
+    FROM silver.fact_player_session s
+    WHERE s.gamingday >= p_from_date
+      AND s.gamingday <= p_to_date
+    GROUP BY s.gamingday, COALESCE(s.idtable, -1), COALESCE(s.idgame, -1);
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION gold.sp_load_fact_session_day_by_agent_group(
+    p_from_date date,
+    p_to_date   date
+)
+RETURNS void
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    DELETE FROM gold.fact_session_day_by_agent_group
+    WHERE gamingday >= p_from_date
+      AND gamingday <= p_to_date;
+
+    INSERT INTO gold.fact_session_day_by_agent_group (
+        gamingday,
+        idagentgroup,
+        idagent,
+        sessionscnt,
+        memberscnt,
+        total_realdrop,
+        total_handhold,
+        total_cashout,
+        total_chipsin,
+        total_chipsout,
+        avg_averbet
+    )
+    SELECT
+        s.gamingday,
+        COALESCE(s.idagentgroup, -1) AS idagentgroup,
+        MAX(s.idagent) AS idagent,
+        COUNT(*)::bigint AS sessionscnt,
+        COUNT(DISTINCT s.membership)::bigint AS memberscnt,
+        SUM(COALESCE(s.realdrop, 0.0))::numeric(19,4) AS total_realdrop,
+        SUM(COALESCE(s.handhold, 0.0))::numeric(19,4) AS total_handhold,
+        SUM(COALESCE(s.cashout, 0.0))::numeric(19,4) AS total_cashout,
+        SUM(COALESCE(s.chipsin, 0.0))::numeric(19,4) AS total_chipsin,
+        SUM(COALESCE(s.chipsout, 0.0))::numeric(19,4) AS total_chipsout,
+        COALESCE(AVG(COALESCE(s.averbet, 0.0)), 0.0)::numeric(19,4) AS avg_averbet
+    FROM silver.fact_player_session s
+    WHERE s.gamingday >= p_from_date
+      AND s.gamingday <= p_to_date
+    GROUP BY s.gamingday, COALESCE(s.idagentgroup, -1);
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION gold.sp_load_session_marts(
+    p_from_date date,
+    p_to_date   date
+)
+RETURNS void
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    PERFORM silver.sp_load_reference_and_facts(p_from_date, p_to_date);
+    PERFORM gold.sp_load_fact_session_day_by_table_game(p_from_date, p_to_date);
+    PERFORM gold.sp_load_fact_session_day_by_agent_group(p_from_date, p_to_date);
+END;
+$$;

@@ -156,13 +156,35 @@ CREATE TABLE IF NOT EXISTS bronze.casino_transactions_calculated_raw (
 CREATE TABLE IF NOT EXISTS bronze.manage_player_sessions_raw (
     idplayerstracking   bigint,
     timestart           timestamp,
+    idplayersession     bigint,
+    timefinish          timestamp,
+    idtable             int,
+    idgame              int,
+    idslot              int,
     realdrop            numeric(19,4),
+    chipsin             numeric(19,4),
+    chipsout            numeric(19,4),
     handhold            numeric(19,4),
     cashout             numeric(19,4),
     averbet             numeric(19,4),
+    isdeleted           boolean,
+    created             timestamp,
+    modified            timestamp,
+    row_version         int,
     _source_system      text DEFAULT 'mssql',
     _loaded_at_utc      timestamptz NOT NULL DEFAULT now()
 );
+ALTER TABLE bronze.manage_player_sessions_raw ADD COLUMN IF NOT EXISTS idplayersession bigint;
+ALTER TABLE bronze.manage_player_sessions_raw ADD COLUMN IF NOT EXISTS timefinish timestamp;
+ALTER TABLE bronze.manage_player_sessions_raw ADD COLUMN IF NOT EXISTS idtable int;
+ALTER TABLE bronze.manage_player_sessions_raw ADD COLUMN IF NOT EXISTS idgame int;
+ALTER TABLE bronze.manage_player_sessions_raw ADD COLUMN IF NOT EXISTS idslot int;
+ALTER TABLE bronze.manage_player_sessions_raw ADD COLUMN IF NOT EXISTS chipsin numeric(19,4);
+ALTER TABLE bronze.manage_player_sessions_raw ADD COLUMN IF NOT EXISTS chipsout numeric(19,4);
+ALTER TABLE bronze.manage_player_sessions_raw ADD COLUMN IF NOT EXISTS isdeleted boolean;
+ALTER TABLE bronze.manage_player_sessions_raw ADD COLUMN IF NOT EXISTS created timestamp;
+ALTER TABLE bronze.manage_player_sessions_raw ADD COLUMN IF NOT EXISTS modified timestamp;
+ALTER TABLE bronze.manage_player_sessions_raw ADD COLUMN IF NOT EXISTS row_version int;
 CREATE INDEX IF NOT EXISTS idx_player_sessions_tracking ON bronze.manage_player_sessions_raw(idplayerstracking);
 CREATE UNIQUE INDEX IF NOT EXISTS ux_player_sessions_tracking_start ON bronze.manage_player_sessions_raw(idplayerstracking, timestart);
 

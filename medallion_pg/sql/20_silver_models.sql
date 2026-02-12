@@ -346,3 +346,393 @@ BEGIN
     FROM silver.fn_membership_day(p_from_date, p_to_date, p_agent_id) d;
 END;
 $$;
+
+CREATE TABLE IF NOT EXISTS silver.dim_game (
+    idgame               int PRIMARY KEY,
+    codegame             text,
+    namegame             text,
+    listorder_game       int,
+    idbonussystem        int,
+    nmbboxes             int,
+    loaded_at_utc        timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS silver.dim_table_type (
+    idtabletype          int PRIMARY KEY,
+    codetabletype        text,
+    nametabletype        text,
+    listorder_tabletype  int,
+    idgametype           int,
+    loaded_at_utc        timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS silver.bridge_table_type_game (
+    idtabletype          int NOT NULL,
+    idgame               int NOT NULL,
+    listorder            int,
+    loaded_at_utc        timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (idtabletype, idgame)
+);
+
+CREATE TABLE IF NOT EXISTS silver.dim_table (
+    idtable              int PRIMARY KEY,
+    idtabletype          int,
+    nametable            text,
+    snmbtable            text,
+    codetable            text,
+    isvirtual            boolean,
+    listorder_table      int,
+    idbonusgame          int,
+    idbonussystem        int,
+    ismarketing          boolean,
+    idcurrency           int,
+    mysteryguarantee     numeric(19,4),
+    ratemystery          numeric(19,4),
+    lowerlimitmystery    numeric(19,4),
+    upperlimitmystery    numeric(19,4),
+    minplayingbet        numeric(19,4),
+    loaded_at_utc        timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS silver.dim_agent_group_scd (
+    idagentgroup         int PRIMARY KEY,
+    idagent              int,
+    nameagent            text,
+    nameagentgroup       text,
+    datebegin            date,
+    dateend              date,
+    memoagentgroup       text,
+    row_version          int,
+    modified             timestamp,
+    loaded_at_utc        timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_silver_agent_group_scd_agent_date
+    ON silver.dim_agent_group_scd(idagent, datebegin, dateend);
+
+CREATE TABLE IF NOT EXISTS silver.fact_fx_rate_daily (
+    idcasino             int NOT NULL,
+    datechange           date NOT NULL,
+    idcurrency           int NOT NULL,
+    idcurrencyexchrate   int,
+    exchrate             numeric(19,8),
+    row_version          int,
+    created              timestamp,
+    modified             timestamp,
+    loaded_at_utc        timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (idcasino, datechange, idcurrency)
+);
+
+CREATE TABLE IF NOT EXISTS silver.fact_player_session (
+    idplayerstracking    bigint NOT NULL,
+    timestart            timestamp NOT NULL,
+    gamingday            date NOT NULL,
+    membership           bigint,
+    idplayersession      bigint,
+    timefinish           timestamp,
+    idtable              int,
+    idgame               int,
+    idslot               int,
+    idagent              int,
+    idagentgroup         int,
+    realdrop             numeric(19,4),
+    chipsin              numeric(19,4),
+    chipsout             numeric(19,4),
+    handhold             numeric(19,4),
+    cashout              numeric(19,4),
+    averbet              numeric(19,4),
+    loaded_at_utc        timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (idplayerstracking, timestart)
+);
+CREATE INDEX IF NOT EXISTS idx_silver_fact_player_session_day
+    ON silver.fact_player_session(gamingday);
+CREATE INDEX IF NOT EXISTS idx_silver_fact_player_session_table_game
+    ON silver.fact_player_session(gamingday, idtable, idgame);
+CREATE INDEX IF NOT EXISTS idx_silver_fact_player_session_agent_group
+    ON silver.fact_player_session(gamingday, idagentgroup);
+
+CREATE OR REPLACE FUNCTION silver.sp_load_reference_dimensions()
+RETURNS void
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    INSERT INTO silver.dim_game (
+        idgame, codegame, namegame, listorder_game, idbonussystem, nmbboxes
+    )
+    SELECT
+        g.idgame,
+        g.codegame,
+        g.namegame,
+        g.listorder_game,
+        g.idbonussystem,
+        g.nmbboxes
+    FROM bronze.casino_games_ref_raw g
+    ON CONFLICT (idgame) DO UPDATE SET
+        codegame = EXCLUDED.codegame,
+        namegame = EXCLUDED.namegame,
+        listorder_game = EXCLUDED.listorder_game,
+        idbonussystem = EXCLUDED.idbonussystem,
+        nmbboxes = EXCLUDED.nmbboxes,
+        loaded_at_utc = now();
+
+    INSERT INTO silver.dim_table_type (
+        idtabletype, codetabletype, nametabletype, listorder_tabletype, idgametype
+    )
+    SELECT
+        tt.idtabletype,
+        tt.codetabletype,
+        tt.nametabletype,
+        tt.listorder_tabletype,
+        tt.idgametype
+    FROM bronze.casino_table_types_raw tt
+    ON CONFLICT (idtabletype) DO UPDATE SET
+        codetabletype = EXCLUDED.codetabletype,
+        nametabletype = EXCLUDED.nametabletype,
+        listorder_tabletype = EXCLUDED.listorder_tabletype,
+        idgametype = EXCLUDED.idgametype,
+        loaded_at_utc = now();
+
+    INSERT INTO silver.bridge_table_type_game (
+        idtabletype, idgame, listorder
+    )
+    SELECT
+        btg.idtabletype,
+        btg.idgame,
+        btg.listorder
+    FROM bronze.casino_table_types_games_raw btg
+    ON CONFLICT (idtabletype, idgame) DO UPDATE SET
+        listorder = EXCLUDED.listorder,
+        loaded_at_utc = now();
+
+    INSERT INTO silver.dim_table (
+        idtable, idtabletype, nametable, snmbtable, codetable,
+        isvirtual, listorder_table, idbonusgame, idbonussystem, ismarketing,
+        idcurrency, mysteryguarantee, ratemystery, lowerlimitmystery,
+        upperlimitmystery, minplayingbet
+    )
+    SELECT
+        t.idtable,
+        t.idtabletype,
+        t.nametable,
+        t.snmbtable,
+        t.codetable,
+        t.isvirtual,
+        t.listorder_table,
+        t.idbonusgame,
+        t.idbonussystem,
+        t.ismarketing,
+        t.idcurrency,
+        t.mysteryguarantee,
+        t.ratemystery,
+        t.lowerlimitmystery,
+        t.upperlimitmystery,
+        t.minplayingbet
+    FROM bronze.casino_tables_ref_raw t
+    ON CONFLICT (idtable) DO UPDATE SET
+        idtabletype = EXCLUDED.idtabletype,
+        nametable = EXCLUDED.nametable,
+        snmbtable = EXCLUDED.snmbtable,
+        codetable = EXCLUDED.codetable,
+        isvirtual = EXCLUDED.isvirtual,
+        listorder_table = EXCLUDED.listorder_table,
+        idbonusgame = EXCLUDED.idbonusgame,
+        idbonussystem = EXCLUDED.idbonussystem,
+        ismarketing = EXCLUDED.ismarketing,
+        idcurrency = EXCLUDED.idcurrency,
+        mysteryguarantee = EXCLUDED.mysteryguarantee,
+        ratemystery = EXCLUDED.ratemystery,
+        lowerlimitmystery = EXCLUDED.lowerlimitmystery,
+        upperlimitmystery = EXCLUDED.upperlimitmystery,
+        minplayingbet = EXCLUDED.minplayingbet,
+        loaded_at_utc = now();
+
+    INSERT INTO silver.dim_agent_group_scd (
+        idagentgroup, idagent, nameagent, nameagentgroup,
+        datebegin, dateend, memoagentgroup, row_version, modified
+    )
+    SELECT
+        ag.idagentgroup,
+        ag.idagent,
+        a.nameagent,
+        ag.nameagentgroup,
+        ag.datebegin,
+        ag.dateend,
+        ag.memoagentgroup,
+        ag.row_version,
+        ag.modified
+    FROM bronze.manage_agent_groups_raw ag
+    LEFT JOIN bronze.manage_agents_raw a
+      ON a.idagent = ag.idagent
+    ON CONFLICT (idagentgroup) DO UPDATE SET
+        idagent = EXCLUDED.idagent,
+        nameagent = EXCLUDED.nameagent,
+        nameagentgroup = EXCLUDED.nameagentgroup,
+        datebegin = EXCLUDED.datebegin,
+        dateend = EXCLUDED.dateend,
+        memoagentgroup = EXCLUDED.memoagentgroup,
+        row_version = EXCLUDED.row_version,
+        modified = EXCLUDED.modified,
+        loaded_at_utc = now();
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION silver.fn_player_session(
+    p_from_date date,
+    p_to_date   date
+)
+RETURNS TABLE (
+    idplayerstracking    bigint,
+    timestart            timestamp,
+    gamingday            date,
+    membership           bigint,
+    idplayersession      bigint,
+    timefinish           timestamp,
+    idtable              int,
+    idgame               int,
+    idslot               int,
+    idagent              int,
+    idagentgroup         int,
+    realdrop             numeric(19,4),
+    chipsin              numeric(19,4),
+    chipsout             numeric(19,4),
+    handhold             numeric(19,4),
+    cashout              numeric(19,4),
+    averbet              numeric(19,4)
+)
+LANGUAGE sql
+AS $$
+SELECT
+    ps.idplayerstracking,
+    ps.timestart,
+    COALESCE(pt.datework, ps.timestart::date) AS gamingday,
+    pt.membership,
+    ps.idplayersession,
+    ps.timefinish,
+    ps.idtable,
+    ps.idgame,
+    ps.idslot,
+    pp.idagent,
+    ag_match.idagentgroup,
+    COALESCE(ps.realdrop, 0.0)::numeric(19,4) AS realdrop,
+    COALESCE(ps.chipsin, 0.0)::numeric(19,4) AS chipsin,
+    COALESCE(ps.chipsout, 0.0)::numeric(19,4) AS chipsout,
+    COALESCE(ps.handhold, 0.0)::numeric(19,4) AS handhold,
+    COALESCE(ps.cashout, 0.0)::numeric(19,4) AS cashout,
+    COALESCE(ps.averbet, 0.0)::numeric(19,4) AS averbet
+FROM bronze.manage_player_sessions_raw ps
+JOIN bronze.casino_players_tracking_raw pt
+  ON pt.idplayerstracking = ps.idplayerstracking
+LEFT JOIN bronze.person_players_raw pp
+  ON pp.membership = pt.membership
+LEFT JOIN LATERAL (
+    SELECT ag.idagentgroup
+    FROM bronze.manage_agent_groups_raw ag
+    WHERE ag.idagent = pp.idagent
+      AND COALESCE(pt.datework, ps.timestart::date) >= ag.datebegin
+      AND COALESCE(pt.datework, ps.timestart::date) <= COALESCE(ag.dateend, DATE '2999-12-31')
+    ORDER BY ag.datebegin DESC, ag.modified DESC
+    LIMIT 1
+) ag_match ON true
+WHERE COALESCE(pt.datework, ps.timestart::date) >= p_from_date
+  AND COALESCE(pt.datework, ps.timestart::date) <= p_to_date
+  AND pt.membership IS NOT NULL
+  AND pt.membership <> 5
+  AND COALESCE(ps.isdeleted, false) = false;
+$$;
+
+CREATE OR REPLACE FUNCTION silver.sp_load_fact_fx_rate_daily(
+    p_from_date date,
+    p_to_date   date
+)
+RETURNS void
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    DELETE FROM silver.fact_fx_rate_daily
+    WHERE datechange >= p_from_date
+      AND datechange <= p_to_date;
+
+    INSERT INTO silver.fact_fx_rate_daily (
+        idcasino, datechange, idcurrency, idcurrencyexchrate,
+        exchrate, row_version, created, modified
+    )
+    SELECT
+        r.idcasino,
+        r.datechange,
+        r.idcurrency,
+        r.idcurrencyexchrate,
+        r.exchrate,
+        r.row_version,
+        r.created,
+        r.modified
+    FROM bronze.casino_currency_exch_rates_raw r
+    WHERE r.datechange >= p_from_date
+      AND r.datechange <= p_to_date;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION silver.sp_load_fact_player_session(
+    p_from_date date,
+    p_to_date   date
+)
+RETURNS void
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    DELETE FROM silver.fact_player_session
+    WHERE gamingday >= p_from_date
+      AND gamingday <= p_to_date;
+
+    INSERT INTO silver.fact_player_session (
+        idplayerstracking,
+        timestart,
+        gamingday,
+        membership,
+        idplayersession,
+        timefinish,
+        idtable,
+        idgame,
+        idslot,
+        idagent,
+        idagentgroup,
+        realdrop,
+        chipsin,
+        chipsout,
+        handhold,
+        cashout,
+        averbet
+    )
+    SELECT
+        s.idplayerstracking,
+        s.timestart,
+        s.gamingday,
+        s.membership,
+        s.idplayersession,
+        s.timefinish,
+        s.idtable,
+        s.idgame,
+        s.idslot,
+        s.idagent,
+        s.idagentgroup,
+        s.realdrop,
+        s.chipsin,
+        s.chipsout,
+        s.handhold,
+        s.cashout,
+        s.averbet
+    FROM silver.fn_player_session(p_from_date, p_to_date) s;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION silver.sp_load_reference_and_facts(
+    p_from_date date,
+    p_to_date   date
+)
+RETURNS void
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    PERFORM silver.sp_load_reference_dimensions();
+    PERFORM silver.sp_load_fact_fx_rate_daily(p_from_date, p_to_date);
+    PERFORM silver.sp_load_fact_player_session(p_from_date, p_to_date);
+END;
+$$;
