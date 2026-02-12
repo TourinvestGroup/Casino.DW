@@ -99,6 +99,8 @@ Flow behavior:
 - Bronze load first
 - Gold refresh second
 - default Gold window = previous calendar day (weekends included)
+- updates `LAST_REFRESH.md` after every run (success or failure)
+- sends run status email (success/failure) when SMTP variables are configured
 
 Deploy at 09:00 every day:
 
@@ -119,6 +121,18 @@ Optional rolling window mode:
 
 ```bash
 prefect deploy prefect_flow.py:daily_casino_dw --name daily-casino-dw --cron "0 9 * * *" --param use_previous_day_window=false --param gold_refresh_lookback_days=7
+```
+
+Email notification variables:
+
+```bash
+set SMTP_HOST=smtp.your-domain.com
+set SMTP_PORT=587
+set SMTP_USERNAME=your_user
+set SMTP_PASSWORD=your_password
+set SMTP_USE_TLS=true
+set SMTP_FROM_EMAIL=dw-bot@your-domain.com
+set SMTP_TO_EMAILS=you@your-domain.com,team@your-domain.com
 ```
 
 ## 6) Archive / purge old Bronze data
