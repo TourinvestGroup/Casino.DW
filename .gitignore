@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+.venv/
+venv/
+
+# Env files
+.env
+*.env
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+
+# Prefect local state
+.prefect/
+
+# Build and caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
