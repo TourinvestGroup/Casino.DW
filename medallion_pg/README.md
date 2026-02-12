@@ -131,8 +131,17 @@ set SMTP_PORT=587
 set SMTP_USERNAME=your_user
 set SMTP_PASSWORD=your_password
 set SMTP_USE_TLS=true
+set SMTP_USE_SSL=false
 set SMTP_FROM_EMAIL=dw-bot@your-domain.com
 set SMTP_TO_EMAILS=you@your-domain.com,team@your-domain.com
+```
+
+For providers using SSL on port 465 (for example Titan), use:
+
+```bash
+set SMTP_PORT=465
+set SMTP_USE_TLS=false
+set SMTP_USE_SSL=true
 ```
 
 ## 6) Archive / purge old Bronze data

@@ -10,10 +10,13 @@ from pathlib import Path
 
 import psycopg2
 from prefect import flow, get_run_logger, task
+from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = BASE_DIR.parent.parent
 LAST_REFRESH_FILE = PROJECT_DIR / "LAST_REFRESH.md"
+
+load_dotenv(BASE_DIR / ".env")
 
 
 def get_previous_day(anchor_date: date) -> date:
@@ -164,6 +167,7 @@ def send_status_email(
     smtp_user = os.getenv("SMTP_USERNAME")
     smtp_password = os.getenv("SMTP_PASSWORD")
     smtp_use_tls = os.getenv("SMTP_USE_TLS", "true").lower() == "true"
+    smtp_use_ssl = os.getenv("SMTP_USE_SSL", "false").lower() == "true"
     smtp_from = os.getenv("SMTP_FROM_EMAIL")
     smtp_to = os.getenv("SMTP_TO_EMAILS")
 
@@ -192,12 +196,18 @@ def send_status_email(
     message["To"] = ", ".join(recipients)
     message.set_content(body)
 
-    with smtplib.SMTP(smtp_host, smtp_port, timeout=30) as server:
-        if smtp_use_tls:
-            server.starttls()
-        if smtp_user and smtp_password:
-            server.login(smtp_user, smtp_password)
-        server.send_message(message)
+    if smtp_use_ssl:
+        with smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=30) as server:
+            if smtp_user and smtp_password:
+                server.login(smtp_user, smtp_password)
+            server.send_message(message)
+    else:
+        with smtplib.SMTP(smtp_host, smtp_port, timeout=30) as server:
+            if smtp_use_tls:
+                server.starttls()
+            if smtp_user and smtp_password:
+                server.login(smtp_user, smtp_password)
+            server.send_message(message)
 
     logger.info("Status email sent to %s", ", ".join(recipients))
 
