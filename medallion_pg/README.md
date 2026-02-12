@@ -1,5 +1,11 @@
 # PostgreSQL Medallion DW (Scenario 2.5)
 
+![Pipeline](https://img.shields.io/badge/Pipeline-Prefect%20Daily%2009%3A00-6f42c1)
+![Bronze](https://img.shields.io/badge/Bronze-Watermark%20%2B%20Sliding%20Window-0a7ea4)
+![Last Refresh](https://img.shields.io/badge/Last%20Refresh-2026--02--12%2018%3A52%20UTC-1f883d)
+
+Current runtime status is tracked in [LAST_REFRESH.md](LAST_REFRESH.md).
+
 This project implements Medallion architecture on PostgreSQL localhost:
 - Bronze: raw replicated SQL Server tables
 - Silver: cleansed, permanent transformation layer
