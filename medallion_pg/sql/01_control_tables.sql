@@ -21,11 +21,17 @@ INSERT INTO dw_control.etl_watermark (source_table, watermark_column, watermark_
 VALUES
     ('Person.Visits', 'Created', NULL),
     ('Manage.Agents_Players', 'dateChange', NULL),
+    ('Manage.Agent_Groups', 'Modified', NULL),
     ('Person.Players', 'Membership', NULL),
     ('Manage.Agents', 'idAgent', NULL),
     ('Casino.Countries', 'idCountry', NULL),
+    ('Casino.Games', '__full_snapshot__', NULL),
+    ('Casino.TableTypesGames', '__full_snapshot__', NULL),
+    ('Casino.TableTypes', '__full_snapshot__', NULL),
+    ('Casino.Tables', '__full_snapshot__', NULL),
+    ('Casino.Currency_ExchRates', 'row_version', NULL),
     ('CashDesk.view_Transactions', 'idOper', NULL),
     ('Casino.Transactions_Calculated', 'idOper', NULL),
     ('Manage.PlayerSessions', 'idPlayersTracking', NULL),
-    ('Casino.PlayersTracking', 'idPlayersTracking', NULL)
+    ('Manage.view_PlayersTracking', 'idPlayersTracking', NULL)
 ON CONFLICT (source_table) DO NOTHING;

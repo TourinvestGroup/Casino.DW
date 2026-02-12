@@ -49,6 +49,37 @@ SOURCE_TABLES = [
         "watermark_getter": lambda row: row[2],
     },
     {
+        "source_name": "Manage.Agent_Groups",
+        "watermark_column": "Modified",
+        "watermark_type": "datetime",
+        "lookback_days": DEFAULT_LOOKBACK_DAYS,
+        "select_sql": """
+            SELECT idAgentGroup, idAgent, nameAgentGroup, dateBegin, dateEnd,
+                   memoAgentGroup, Created, CreatedBy, Modified, ModifiedBy, row_Version
+            FROM Manage.Agent_Groups
+            WHERE ((? IS NULL OR Modified > ?) OR dateBegin >= ?)
+        """,
+        "target_sql": """
+            INSERT INTO bronze.manage_agent_groups_raw
+                (idagentgroup, idagent, nameagentgroup, datebegin, dateend,
+                 memoagentgroup, created, createdby, modified, modifiedby, row_version)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (idagentgroup) DO UPDATE SET
+                idagent = EXCLUDED.idagent,
+                nameagentgroup = EXCLUDED.nameagentgroup,
+                datebegin = EXCLUDED.datebegin,
+                dateend = EXCLUDED.dateend,
+                memoagentgroup = EXCLUDED.memoagentgroup,
+                created = EXCLUDED.created,
+                createdby = EXCLUDED.createdby,
+                modified = EXCLUDED.modified,
+                modifiedby = EXCLUDED.modifiedby,
+                row_version = EXCLUDED.row_version,
+                _loaded_at_utc = now()
+        """,
+        "watermark_getter": lambda row: row[8],
+    },
+    {
         "source_name": "Person.Players",
         "watermark_column": "Membership",
         "watermark_type": "int",
@@ -105,6 +136,143 @@ SOURCE_TABLES = [
                 _loaded_at_utc = now()
         """,
         "watermark_getter": lambda row: row[0],
+    },
+    {
+        "source_name": "Casino.Games",
+        "watermark_column": "__full_snapshot__",
+        "full_snapshot": True,
+        "select_sql": """
+            SELECT idGame, codeGame, nameGame, listOrder_Game, idBonusSystem, nmbBoxes
+            FROM Casino.Games
+        """,
+        "target_sql": """
+            INSERT INTO bronze.casino_games_ref_raw
+                (idgame, codegame, namegame, listorder_game, idbonussystem, nmbboxes)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT (idgame) DO UPDATE SET
+                codegame = EXCLUDED.codegame,
+                namegame = EXCLUDED.namegame,
+                listorder_game = EXCLUDED.listorder_game,
+                idbonussystem = EXCLUDED.idbonussystem,
+                nmbboxes = EXCLUDED.nmbboxes,
+                _loaded_at_utc = now()
+        """,
+        "watermark_getter": lambda row: None,
+    },
+    {
+        "source_name": "Casino.TableTypesGames",
+        "watermark_column": "__full_snapshot__",
+        "full_snapshot": True,
+        "select_sql": """
+            SELECT idTableType, idGame, listOrder
+            FROM Casino.TableTypesGames
+        """,
+        "target_sql": """
+            INSERT INTO bronze.casino_table_types_games_raw
+                (idtabletype, idgame, listorder)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (idtabletype, idgame) DO UPDATE SET
+                listorder = EXCLUDED.listorder,
+                _loaded_at_utc = now()
+        """,
+        "watermark_getter": lambda row: None,
+    },
+    {
+        "source_name": "Casino.TableTypes",
+        "watermark_column": "__full_snapshot__",
+        "full_snapshot": True,
+        "select_sql": """
+            SELECT idTableType, codeTableType, nameTableType, listOrder_TableType, idGameType
+            FROM Casino.TableTypes
+        """,
+        "target_sql": """
+            INSERT INTO bronze.casino_table_types_raw
+                (idtabletype, codetabletype, nametabletype, listorder_tabletype, idgametype)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (idtabletype) DO UPDATE SET
+                codetabletype = EXCLUDED.codetabletype,
+                nametabletype = EXCLUDED.nametabletype,
+                listorder_tabletype = EXCLUDED.listorder_tabletype,
+                idgametype = EXCLUDED.idgametype,
+                _loaded_at_utc = now()
+        """,
+        "watermark_getter": lambda row: None,
+    },
+    {
+        "source_name": "Casino.Tables",
+        "watermark_column": "__full_snapshot__",
+        "full_snapshot": True,
+        "select_sql": """
+            SELECT idTable, idTableType, nameTable, snmbTable, codeTable,
+                   isVirtual, listOrder_Table, idBonusGame, idBonusSystem, isMarketing,
+                   idCurrency, MysteryGuarantee, rateMystery, lowerLimitMystery,
+                   upperLimitMystery, minPlayingBet
+            FROM Casino.Tables
+        """,
+        "target_sql": """
+            INSERT INTO bronze.casino_tables_ref_raw
+                (idtable, idtabletype, nametable, snmbtable, codetable,
+                 isvirtual, listorder_table, idbonusgame, idbonussystem, ismarketing,
+                 idcurrency, mysteryguarantee, ratemystery, lowerlimitmystery,
+                 upperlimitmystery, minplayingbet)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (idtable) DO UPDATE SET
+                idtabletype = EXCLUDED.idtabletype,
+                nametable = EXCLUDED.nametable,
+                snmbtable = EXCLUDED.snmbtable,
+                codetable = EXCLUDED.codetable,
+                isvirtual = EXCLUDED.isvirtual,
+                listorder_table = EXCLUDED.listorder_table,
+                idbonusgame = EXCLUDED.idbonusgame,
+                idbonussystem = EXCLUDED.idbonussystem,
+                ismarketing = EXCLUDED.ismarketing,
+                idcurrency = EXCLUDED.idcurrency,
+                mysteryguarantee = EXCLUDED.mysteryguarantee,
+                ratemystery = EXCLUDED.ratemystery,
+                lowerlimitmystery = EXCLUDED.lowerlimitmystery,
+                upperlimitmystery = EXCLUDED.upperlimitmystery,
+                minplayingbet = EXCLUDED.minplayingbet,
+                _loaded_at_utc = now()
+        """,
+        "watermark_getter": lambda row: None,
+        "row_mapper": lambda row: (
+            row[0], row[1], row[2], row[3], row[4],
+            None if row[5] is None else bool(row[5]),
+            row[6], row[7], row[8],
+            None if row[9] is None else bool(row[9]),
+            row[10], row[11], row[12], row[13], row[14], row[15],
+        ),
+    },
+    {
+        "source_name": "Casino.Currency_ExchRates",
+        "watermark_column": "row_version",
+        "watermark_type": "int",
+        "select_sql": """
+            SELECT idCasino, dateChange, idCurrency, idCurrencyExchRate, ExchRate,
+                   Created, CreatedBy, CreatedHostName, Modified, ModifiedBy,
+                   ModifiedHostName, row_version
+            FROM Casino.Currency_ExchRates
+            WHERE (? IS NULL OR row_version > ?)
+        """,
+        "target_sql": """
+            INSERT INTO bronze.casino_currency_exch_rates_raw
+                (idcasino, datechange, idcurrency, idcurrencyexchrate, exchrate,
+                 created, createdby, createdhostname, modified, modifiedby,
+                 modifiedhostname, row_version)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (idcasino, datechange, idcurrency) DO UPDATE SET
+                idcurrencyexchrate = EXCLUDED.idcurrencyexchrate,
+                exchrate = EXCLUDED.exchrate,
+                created = EXCLUDED.created,
+                createdby = EXCLUDED.createdby,
+                createdhostname = EXCLUDED.createdhostname,
+                modified = EXCLUDED.modified,
+                modifiedby = EXCLUDED.modifiedby,
+                modifiedhostname = EXCLUDED.modifiedhostname,
+                row_version = EXCLUDED.row_version,
+                _loaded_at_utc = now()
+        """,
+        "watermark_getter": lambda row: row[11],
     },
     {
         "source_name": "CashDesk.view_Transactions",
@@ -172,26 +340,33 @@ SOURCE_TABLES = [
         "source_name": "Manage.PlayerSessions",
         "watermark_column": "idPlayersTracking",
         "watermark_type": "int",
+        "lookback_days": DEFAULT_LOOKBACK_DAYS,
         "select_sql": """
             SELECT idPlayersTracking, timeStart, RealDrop, HandHold, CashOut, averBet
             FROM Manage.PlayerSessions
-            WHERE (? IS NULL OR idPlayersTracking > ?)
+            WHERE ((? IS NULL OR idPlayersTracking > ?) OR CAST(timeStart AS date) >= ?)
         """,
         "target_sql": """
             INSERT INTO bronze.manage_player_sessions_raw
                 (idplayerstracking, timestart, realdrop, handhold, cashout, averbet)
             VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT (idplayerstracking, timestart) DO UPDATE SET
+                realdrop = EXCLUDED.realdrop,
+                handhold = EXCLUDED.handhold,
+                cashout = EXCLUDED.cashout,
+                averbet = EXCLUDED.averbet,
+                _loaded_at_utc = now()
         """,
         "watermark_getter": lambda row: row[0],
     },
     {
-        "source_name": "Casino.PlayersTracking",
+        "source_name": "Manage.view_PlayersTracking",
         "watermark_column": "idPlayersTracking",
         "watermark_type": "int",
         "lookback_days": DEFAULT_LOOKBACK_DAYS,
         "select_sql": """
             SELECT idPlayersTracking, dateWork, Membership
-            FROM Casino.PlayersTracking
+            FROM Manage.view_PlayersTracking
             WHERE ((? IS NULL OR idPlayersTracking > ?) OR dateWork >= ?)
               AND Membership IS NOT NULL
         """,
@@ -270,6 +445,9 @@ def log_run(pg_conn, pipeline_name, source_table, status, rows_read=0, rows_writ
 
 
 def build_select_params(current_watermark, table_cfg):
+    if table_cfg.get("full_snapshot", False):
+        return tuple()
+
     lookback_days = table_cfg.get("lookback_days")
     if lookback_days is None:
         return (current_watermark, current_watermark)
@@ -288,9 +466,13 @@ def load_table(mssql_conn, pg_conn, table_cfg):
     current_watermark_raw = get_watermark(pg_conn, source_name)
     current_watermark = parse_watermark(current_watermark_raw, watermark_type)
     select_params = build_select_params(current_watermark, table_cfg)
+    is_full_snapshot = table_cfg.get("full_snapshot", False)
 
     with mssql_conn.cursor() as src_cur:
-        src_cur.execute(select_sql, *select_params)
+        if is_full_snapshot:
+            src_cur.execute(select_sql)
+        else:
+            src_cur.execute(select_sql, *select_params)
         rows = src_cur.fetchall()
 
     if not rows:
@@ -311,7 +493,10 @@ def load_table(mssql_conn, pg_conn, table_cfg):
     with pg_conn.cursor() as tgt_cur:
         execute_batch(tgt_cur, target_sql, rows_to_write, page_size=1000)
 
-    set_watermark(pg_conn, source_name, watermark_column, max_wm)
+    if not is_full_snapshot:
+        set_watermark(pg_conn, source_name, watermark_column, max_wm)
+    else:
+        set_watermark(pg_conn, source_name, watermark_column, datetime.now(timezone.utc).isoformat())
     log_run(pg_conn, "bronze_incremental", source_name, "success", len(rows), len(rows_to_write), None)
     pg_conn.commit()
 

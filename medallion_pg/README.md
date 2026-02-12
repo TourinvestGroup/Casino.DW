@@ -50,6 +50,16 @@ Implemented strategy:
 Current sliding window coverage:
 - `CashDesk.view_Transactions` by `dateWork`
 - `Casino.PlayersTracking` by `dateWork`
+- `Manage.PlayerSessions` by `timeStart`
+
+Additional Bronze sources now included:
+- `Manage.Agent_Groups`
+- `Casino.Games`
+- `Casino.TableTypesGames`
+- `Casino.TableTypes`
+- `Casino.Tables`
+- `Casino.Currency_ExchRates`
+- `Manage.view_PlayersTracking` (used for players tracking ingestion)
 
 Config:
 - `BRONZE_LOOKBACK_DAYS` (default `3`)
