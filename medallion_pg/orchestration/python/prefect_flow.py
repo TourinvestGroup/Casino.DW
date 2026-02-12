@@ -6,9 +6,12 @@ import sys
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
+import psycopg2
 from prefect import flow, get_run_logger, task
 
 BASE_DIR = Path(__file__).resolve().parent
+PROJECT_DIR = BASE_DIR.parent.parent
+LAST_REFRESH_FILE = PROJECT_DIR / "LAST_REFRESH.md"
 
 
 def get_previous_day(anchor_date: date) -> date:
@@ -61,6 +64,63 @@ def run_gold_refresh(from_date: str, to_date: str, agent_id: int | None = None) 
     logger.info("Gold refresh completed")
 
 
+@task(name="update-refresh-note", retries=1, retry_delay_seconds=15)
+def update_refresh_note(from_date: str, to_date: str) -> None:
+    logger = get_run_logger()
+    pg_conn_str = os.getenv("PG_CONN_STR")
+
+    if not pg_conn_str:
+        raise RuntimeError("PG_CONN_STR must be set in environment")
+
+    with psycopg2.connect(pg_conn_str) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM bronze.cashdesk_transactions_raw")
+            bronze_cashdesk_cnt = int(cur.fetchone()[0])
+
+            cur.execute(
+                """
+                SELECT COUNT(*)
+                FROM silver.fact_membership_day
+                WHERE gamingday BETWEEN %s::date AND %s::date
+                """,
+                (from_date, to_date),
+            )
+            silver_cnt = int(cur.fetchone()[0])
+
+            cur.execute(
+                """
+                SELECT COUNT(*)
+                FROM gold.fact_membership_day
+                WHERE gamingday BETWEEN %s::date AND %s::date
+                """,
+                (from_date, to_date),
+            )
+            gold_cnt = int(cur.fetchone()[0])
+
+    now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+    content = f"""# Last Refresh Status
+
+- Last successful end-to-end execution (Bronze + Gold): **{now_utc}**
+- Target PostgreSQL DB: `Casino.DW`
+- Bronze strategy: watermark incremental + sliding reread (`BRONZE_LOOKBACK_DAYS={os.getenv('BRONZE_LOOKBACK_DAYS', '3')}`)
+- Last Gold refresh window: `{from_date}` .. `{to_date}`
+
+## Last known validation snapshot
+
+- `bronze.cashdesk_transactions_raw`: {bronze_cashdesk_cnt:,} rows
+- `silver.fact_membership_day` ({from_date}..{to_date}): {silver_cnt:,} rows
+- `gold.fact_membership_day` ({from_date}..{to_date}): {gold_cnt:,} rows
+
+## Update procedure
+
+This file is auto-updated by `prefect_flow.py` after successful flow runs.
+"""
+
+    LAST_REFRESH_FILE.write_text(content, encoding="utf-8")
+    logger.info("Updated %s", LAST_REFRESH_FILE)
+
+
 @flow(name="casino-dw-daily")
 def daily_casino_dw(
     bronze_lookback_days: int = 3,
@@ -101,6 +161,7 @@ def daily_casino_dw(
 
     run_bronze_load(bronze_lookback_days)
     run_gold_refresh(from_date_str, to_date_str, agent_id)
+    update_refresh_note(from_date_str, to_date_str)
 
     return {
         "status": "success",
