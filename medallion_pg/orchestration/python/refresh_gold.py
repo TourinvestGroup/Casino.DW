@@ -14,6 +14,7 @@ def parse_args():
     parser.add_argument("--from-date", required=True, help="Start date (YYYY-MM-DD)")
     parser.add_argument("--to-date", required=True, help="End date (YYYY-MM-DD)")
     parser.add_argument("--agent-id", type=int, default=None, help="Optional agent filter")
+    parser.add_argument("--skip-egd", action="store_true", help="Skip EGD dimension refresh")
     return parser.parse_args()
 
 
@@ -37,6 +38,11 @@ def main():
                 """,
                 (args.from_date, args.to_date),
             )
+
+            if not args.skip_egd:
+                cur.execute("SELECT gold.sp_load_dim_egd_position()")
+                print("Gold EGD dimension refreshed")
+
         conn.commit()
 
     print(

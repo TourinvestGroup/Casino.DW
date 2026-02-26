@@ -23,6 +23,7 @@ def main():
     args = parse_args()
 
     bronze_cmd = [sys.executable, "load_bronze_incremental.py"]
+    bronze_egd_cmd = [sys.executable, "load_egd_dimension.py"]
     gold_cmd = [
         sys.executable,
         "refresh_gold.py",
@@ -35,7 +36,8 @@ def main():
     if args.agent_id is not None:
         gold_cmd.extend(["--agent-id", str(args.agent_id)])
 
-    run_step(bronze_cmd, "Bronze Incremental Load")
+    run_step(bronze_cmd, "Bronze Incremental Load (DBASE)")
+    run_step(bronze_egd_cmd, "Bronze EGD Load (CIBatumi)")
     run_step(gold_cmd, "Gold Refresh")
 
     print("\nPipeline completed successfully.")

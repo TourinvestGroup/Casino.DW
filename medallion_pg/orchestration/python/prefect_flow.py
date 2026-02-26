@@ -71,10 +71,20 @@ def _get_data_snapshot(pg_conn_str: str, from_date: str, to_date: str) -> dict[s
                 )
                 gold_cnt = int(cur.fetchone()[0])
 
+                cur.execute("SELECT COUNT(*) FROM gold.dim_egd_position")
+                egd_dim_cnt = int(cur.fetchone()[0])
+
+                cur.execute(
+                    "SELECT COUNT(*) FROM gold.dim_egd_position WHERE is_active = true"
+                )
+                egd_active_cnt = int(cur.fetchone()[0])
+
         return {
             "bronze_cashdesk_cnt": bronze_cashdesk_cnt,
             "silver_cnt": silver_cnt,
             "gold_cnt": gold_cnt,
+            "egd_dim_cnt": egd_dim_cnt,
+            "egd_active_cnt": egd_active_cnt,
         }
     except Exception:
         return None
@@ -92,12 +102,20 @@ def run_bronze_load(bronze_lookback_days: int) -> None:
     logger.info("Bronze load completed")
 
 
+@task(name="bronze-egd-load", retries=2, retry_delay_seconds=60)
+def run_bronze_egd_load() -> None:
+    logger = get_run_logger()
+    logger.info("Starting Bronze EGD load from CIBatumi")
+    _run_python_script("load_egd_dimension.py", [])
+    logger.info("Bronze EGD load completed (dim_egd_position + bridge refreshed)")
+
+
 @task(name="gold-refresh", retries=2, retry_delay_seconds=60)
 def run_gold_refresh(from_date: str, to_date: str, agent_id: int | None = None) -> None:
     logger = get_run_logger()
     logger.info("Starting Gold refresh for %s..%s", from_date, to_date)
 
-    args = ["--from-date", from_date, "--to-date", to_date]
+    args = ["--from-date", from_date, "--to-date", to_date, "--skip-egd"]
     if agent_id is not None:
         args.extend(["--agent-id", str(agent_id)])
 
@@ -131,6 +149,7 @@ def update_refresh_note(
 - `bronze.cashdesk_transactions_raw`: {snapshot['bronze_cashdesk_cnt']:,} rows
 - `silver.fact_membership_day` ({from_date}..{to_date}): {snapshot['silver_cnt']:,} rows
 - `gold.fact_membership_day` ({from_date}..{to_date}): {snapshot['gold_cnt']:,} rows
+- `gold.dim_egd_position`: {snapshot['egd_dim_cnt']} positions ({snapshot['egd_active_cnt']} active)
 """
 
     content = f"""# Last Refresh Status
@@ -225,6 +244,9 @@ def daily_casino_dw(
     if not os.getenv("MSSQL_CONN_STR") or not os.getenv("PG_CONN_STR"):
         raise RuntimeError("MSSQL_CONN_STR and PG_CONN_STR must be set in environment")
 
+    if not os.getenv("MSSQL_CIBATUMI_CONN_STR"):
+        logger.warning("MSSQL_CIBATUMI_CONN_STR not set — EGD dimension refresh will be skipped")
+
     if to_date is None:
         anchor_date = datetime.now(timezone.utc).date()
     else:
@@ -252,6 +274,8 @@ def daily_casino_dw(
 
     try:
         run_bronze_load(bronze_lookback_days)
+        if os.getenv("MSSQL_CIBATUMI_CONN_STR"):
+            run_bronze_egd_load()
         run_gold_refresh(from_date_str, to_date_str, agent_id)
         update_refresh_note("success", from_date_str, to_date_str, None)
         send_status_email("success", from_date_str, to_date_str, None)
