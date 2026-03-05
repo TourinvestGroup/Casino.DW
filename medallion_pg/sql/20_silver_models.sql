@@ -1,3 +1,4 @@
+DROP FUNCTION IF EXISTS silver.fn_membership_day(date, date, int);
 CREATE OR REPLACE FUNCTION silver.fn_membership_day(
     p_from_date date,
     p_to_date   date,
@@ -6,6 +7,8 @@ CREATE OR REPLACE FUNCTION silver.fn_membership_day(
 RETURNS TABLE (
     gamingday               date,
     membership              bigint,
+    surname                 text,
+    forename                text,
     idagent                 int,
     agentname               text,
     citizenshipcountry      text,
@@ -20,25 +23,73 @@ RETURNS TABLE (
     junketdeposit_add       numeric(19,4),
     junketdeposit_withdraw  numeric(19,4),
     junketdeposit_net       numeric(19,4),
-    sessionscnt             bigint
+    sessionscnt             bigint,
+    minutes_played          numeric(19,4),
+    slot_totalbet           numeric(19,4),
+    slot_cashbet            numeric(19,4),
+    slot_totalout           numeric(19,4),
+    slot_win                numeric(19,4),
+    slot_nwl                numeric(19,4),
+    slot_billdrop           numeric(19,4),
+    slot_gamesplayed        numeric(19,4),
+    slot_sessions_cnt       bigint,
+    tracking_floatin        numeric(19,4),
+    tracking_floatout       numeric(19,4),
+    tracking_net            numeric(19,4),
+    expense_total           numeric(19,4),
+    expense_airtickets      numeric(19,4),
+    expense_discount_plus   numeric(19,4),
+    expense_hotel           numeric(19,4),
+    expense_other           numeric(19,4),
+    discount_lg             numeric(19,4),
+    discount_slot           numeric(19,4),
+    agent_credit_out        numeric(19,4),
+    agent_credit_void       numeric(19,4),
+    agent_credit_net        numeric(19,4)
 )
 LANGUAGE sql
 AS $$
 WITH visits_base AS (
-    SELECT
-        v.datework AS gamingday,
-        v.membership,
-        MIN(COALESCE(v.time_in, v.created)) AS visittime,
-        MIN(v.time_in) AS time_in,
-        MAX(v.time_out) AS time_out
-    FROM bronze.person_visits_raw v
-    WHERE
-        v.datework >= p_from_date
-        AND v.datework <= p_to_date
-        AND v.membership IS NOT NULL
-        AND v.membership <> 5
-    GROUP BY
-        v.datework, v.membership
+    SELECT gamingday, membership, visittime, time_in, time_out
+    FROM (
+        SELECT
+            v.datework AS gamingday,
+            v.membership,
+            MIN(COALESCE(v.time_in, v.created)) AS visittime,
+            MIN(v.time_in) AS time_in,
+            MAX(v.time_out) AS time_out
+        FROM bronze.person_visits_raw v
+        WHERE
+            v.datework >= p_from_date
+            AND v.datework <= p_to_date
+            AND v.membership IS NOT NULL
+            AND v.membership <> 5
+        GROUP BY
+            v.datework, v.membership
+
+        UNION ALL
+
+        SELECT
+            ds.gamingday,
+            ds.playerid AS membership,
+            MIN(ds.starttimelocal) AS visittime,
+            MIN(ds.starttimelocal) AS time_in,
+            MAX(ds.endtimelocal) AS time_out
+        FROM bronze.drgt_sessions_raw ds
+        WHERE
+            ds.gamingday >= p_from_date
+            AND ds.gamingday <= p_to_date
+            AND ds.playerid IS NOT NULL
+            AND ds.playerid <> 5
+            AND NOT EXISTS (
+                SELECT 1 FROM bronze.person_visits_raw v2
+                WHERE v2.datework = ds.gamingday
+                  AND v2.membership = ds.playerid
+                  AND v2.datework >= p_from_date
+                  AND v2.datework <= p_to_date
+            )
+        GROUP BY ds.gamingday, ds.playerid
+    ) combined
 ),
 agent_at_visit AS (
     SELECT
@@ -215,10 +266,137 @@ system_drop AS (
         AND COALESCE(vt.isdeleted, false) = false
     GROUP BY vt.datework, vt.membership
 ),
+slot_day AS (
+    SELECT
+        ds.gamingday,
+        ds.playerid AS membership,
+        (SUM(COALESCE(ds.totalbet, 0.0)) / 100.0)::numeric(19,4)  AS slot_totalbet,
+        (SUM(COALESCE(ds.cashbet, 0.0))  / 100.0)::numeric(19,4) AS slot_cashbet,
+        (SUM(COALESCE(ds.totalout, 0.0)) / 100.0)::numeric(19,4) AS slot_totalout,
+        (SUM(COALESCE(ds.win, 0.0))      / 100.0)::numeric(19,4) AS slot_win,
+        (SUM(COALESCE(ds.nwl, 0.0))      / 100.0)::numeric(19,4) AS slot_nwl,
+        (SUM(COALESCE(ds.billdrop, 0.0)) / 100.0)::numeric(19,4) AS slot_billdrop,
+        SUM(COALESCE(ds.gamesplayed, 0.0))::numeric(19,4) AS slot_gamesplayed,
+        COUNT(*)::bigint AS slot_sessions_cnt
+    FROM bronze.drgt_sessions_raw ds
+    WHERE ds.gamingday >= p_from_date AND ds.gamingday <= p_to_date
+    GROUP BY ds.gamingday, ds.playerid
+),
+sess_time_day AS (
+    SELECT
+        pt.datework::date AS gamingday,
+        pt.membership,
+        SUM(
+            CASE
+                WHEN ps.timestart IS NULL OR ps.timefinish IS NULL THEN 0
+                WHEN ps.timefinish < ps.timestart THEN 0
+                ELSE EXTRACT(EPOCH FROM (ps.timefinish - ps.timestart)) / 60.0
+            END
+        )::numeric(19,4) AS minutes_played
+    FROM bronze.manage_player_sessions_raw ps
+    JOIN bronze.casino_players_tracking_raw pt
+      ON pt.idplayerstracking = ps.idplayerstracking
+    WHERE pt.datework >= p_from_date AND pt.datework <= p_to_date
+      AND pt.membership IS NOT NULL AND pt.membership <> 5
+      AND COALESCE(ps.isdeleted, false) = false
+    GROUP BY pt.datework::date, pt.membership
+),
+tracking_sess AS (
+    SELECT
+        pt.datework::date AS gamingday,
+        pt.membership,
+        ps.idplayersession,
+        SUM(CASE WHEN pdc.qntchips > 0 THEN pdc.qntchips * ch.valuechip ELSE 0 END)::numeric(19,4) AS floatin_ue,
+        SUM(CASE WHEN pdc.qntchips < 0 THEN -pdc.qntchips * ch.valuechip ELSE 0 END)::numeric(19,4) AS floatout_ue,
+        SUM(pdc.qntchips * ch.valuechip)::numeric(19,4) AS net_ue
+    FROM bronze.manage_player_sessions_raw ps
+    JOIN bronze.casino_players_tracking_raw pt
+      ON pt.idplayerstracking = ps.idplayerstracking
+    JOIN bronze.manage_player_session_details_raw psd
+      ON psd.idplayersession = ps.idplayersession
+    JOIN bronze.manage_player_session_detail_chips_raw pdc
+      ON pdc.idplayersessiondetail = psd.idplayersessiondetail
+    JOIN bronze.casino_chips_raw ch
+      ON ch.idchip = pdc.idchip
+    WHERE pt.datework >= p_from_date AND pt.datework <= p_to_date
+      AND pt.membership IS NOT NULL AND pt.membership <> 5
+      AND COALESCE(ps.isdeleted, false) = false
+    GROUP BY pt.datework::date, pt.membership, ps.idplayersession
+),
+tracking_day AS (
+    SELECT
+        gamingday,
+        membership,
+        SUM(floatin_ue)::numeric(19,4)  AS tracking_floatin,
+        SUM(floatout_ue)::numeric(19,4) AS tracking_floatout,
+        SUM(net_ue)::numeric(19,4)      AS tracking_net
+    FROM tracking_sess
+    GROUP BY gamingday, membership
+),
+expense_tx AS (
+    SELECT
+        vt.datework AS gamingday,
+        vt.membership,
+        vt.idaccount,
+        vt.directionoper,
+        COALESCE(tm.summoney, 0.0)::numeric(19,4) AS summoney,
+        COALESCE(vt.comment, '') AS comment
+    FROM bronze.cashdesk_transactions_raw vt
+    LEFT JOIN (
+        SELECT idoper, SUM(summoney) AS summoney
+        FROM bronze.casino_transaction_money_raw
+        GROUP BY idoper
+    ) tm ON tm.idoper = vt.idoper
+    WHERE vt.datework >= p_from_date AND vt.datework <= p_to_date
+      AND vt.membership IS NOT NULL AND vt.membership <> 5
+      AND vt.idaccount IN (153, 151, 154, 641)
+      AND COALESCE(vt.isdeleted, false) = false
+),
+expense_day AS (
+    SELECT
+        gamingday,
+        membership,
+        SUM(CASE WHEN idaccount = 641 THEN summoney ELSE 0.0 END)::numeric(19,4) AS expense_total,
+        SUM(CASE WHEN idaccount = 641 AND (comment ILIKE '%Air Ticket%' OR comment ILIKE '%Flight%'
+             OR comment ILIKE '%Fly Ticket%' OR comment ILIKE '%Air Tiket%'
+             OR comment ILIKE '%Air Tichets%' OR comment ILIKE '%Air Tickat%'
+             OR comment ILIKE '%Air Tickent%' OR comment ILIKE '%Ticket Cost%'
+             OR comment ILIKE '%Tickets Cost%' OR comment ILIKE '%Ticket Payment%')
+            THEN summoney ELSE 0.0 END)::numeric(19,4) AS expense_airtickets,
+        SUM(CASE WHEN idaccount = 641 AND (comment ILIKE '%Discount%' OR comment ILIKE '%Discaunt%'
+             OR comment ILIKE '%Discont%' OR comment ILIKE '%Discout%' OR comment ILIKE '%disccount%'
+             OR comment ILIKE '%Dsicount%' OR comment ILIKE '%Difference%')
+            THEN summoney ELSE 0.0 END)::numeric(19,4) AS expense_discount_plus,
+        SUM(CASE WHEN idaccount = 641 AND (comment ILIKE '%Hotel%' OR comment ILIKE '%Room Payment%'
+             OR comment ILIKE '%Acommodation%' OR comment ILIKE '%Accommodation%')
+            THEN summoney ELSE 0.0 END)::numeric(19,4) AS expense_hotel,
+        SUM(CASE WHEN idaccount = 641
+             AND NOT (comment ILIKE '%Air Ticket%' OR comment ILIKE '%Flight%'
+                      OR comment ILIKE '%Fly Ticket%' OR comment ILIKE '%Air Tiket%'
+                      OR comment ILIKE '%Air Tichets%' OR comment ILIKE '%Air Tickat%'
+                      OR comment ILIKE '%Air Tickent%' OR comment ILIKE '%Ticket Cost%'
+                      OR comment ILIKE '%Tickets Cost%' OR comment ILIKE '%Ticket Payment%')
+             AND NOT (comment ILIKE '%Discount%' OR comment ILIKE '%Discaunt%'
+                      OR comment ILIKE '%Discont%' OR comment ILIKE '%Discout%'
+                      OR comment ILIKE '%disccount%' OR comment ILIKE '%Dsicount%'
+                      OR comment ILIKE '%Difference%')
+             AND NOT (comment ILIKE '%Hotel%' OR comment ILIKE '%Room Payment%'
+                      OR comment ILIKE '%Acommodation%' OR comment ILIKE '%Accommodation%')
+            THEN summoney ELSE 0.0 END)::numeric(19,4) AS expense_other,
+        SUM(CASE WHEN idaccount = 151 THEN summoney ELSE 0.0 END)::numeric(19,4) AS discount_lg,
+        SUM(CASE WHEN idaccount = 154 THEN summoney ELSE 0.0 END)::numeric(19,4) AS discount_slot,
+        SUM(CASE WHEN idaccount = 153 AND directionoper = 1  THEN summoney ELSE 0.0 END)::numeric(19,4) AS agent_credit_out,
+        SUM(CASE WHEN idaccount = 153 AND directionoper = -1 THEN summoney ELSE 0.0 END)::numeric(19,4) AS agent_credit_void,
+        SUM(CASE WHEN idaccount = 153 THEN summoney ELSE 0.0 END)::numeric(19,4) AS agent_credit_net
+    FROM expense_tx
+    GROUP BY gamingday, membership
+),
 day_rows AS (
     SELECT
         vb.gamingday,
         vb.membership,
+        NULLIF(TRIM(pp.surname), '') AS surname,
+        NULLIF(TRIM(pp.forename), '') AS forename,
         aa.idagent,
         CASE
             WHEN aa.idagent IS NULL THEN 'NO AGENT'
@@ -238,7 +416,29 @@ day_rows AS (
         (-COALESCE(m.privatedeposit_add, 0.0))::numeric(19,4) AS junketdeposit_add,
         (-COALESCE(m.privatedeposit_withdraw, 0.0))::numeric(19,4) AS junketdeposit_withdraw,
         (-COALESCE(m.privatedeposit_net, 0.0))::numeric(19,4) AS junketdeposit_net,
-        COALESCE(s.sessionscnt, 0)::bigint AS sessionscnt
+        COALESCE(s.sessionscnt, 0)::bigint AS sessionscnt,
+        COALESCE(st.minutes_played, 0.0)::numeric(19,4) AS minutes_played,
+        COALESCE(sl.slot_totalbet, 0.0)::numeric(19,4)  AS slot_totalbet,
+        COALESCE(sl.slot_cashbet, 0.0)::numeric(19,4)   AS slot_cashbet,
+        COALESCE(sl.slot_totalout, 0.0)::numeric(19,4)  AS slot_totalout,
+        COALESCE(sl.slot_win, 0.0)::numeric(19,4)       AS slot_win,
+        COALESCE(sl.slot_nwl, 0.0)::numeric(19,4)       AS slot_nwl,
+        COALESCE(sl.slot_billdrop, 0.0)::numeric(19,4)  AS slot_billdrop,
+        COALESCE(sl.slot_gamesplayed, 0.0)::numeric(19,4) AS slot_gamesplayed,
+        COALESCE(sl.slot_sessions_cnt, 0)::bigint        AS slot_sessions_cnt,
+        COALESCE(td.tracking_floatin, 0.0)::numeric(19,4)  AS tracking_floatin,
+        COALESCE(td.tracking_floatout, 0.0)::numeric(19,4) AS tracking_floatout,
+        COALESCE(td.tracking_net, 0.0)::numeric(19,4)      AS tracking_net,
+        COALESCE(ed.expense_total, 0.0)::numeric(19,4)      AS expense_total,
+        COALESCE(ed.expense_airtickets, 0.0)::numeric(19,4) AS expense_airtickets,
+        COALESCE(ed.expense_discount_plus, 0.0)::numeric(19,4) AS expense_discount_plus,
+        COALESCE(ed.expense_hotel, 0.0)::numeric(19,4)      AS expense_hotel,
+        COALESCE(ed.expense_other, 0.0)::numeric(19,4)      AS expense_other,
+        COALESCE(ed.discount_lg, 0.0)::numeric(19,4)        AS discount_lg,
+        COALESCE(ed.discount_slot, 0.0)::numeric(19,4)      AS discount_slot,
+        COALESCE(ed.agent_credit_out, 0.0)::numeric(19,4)   AS agent_credit_out,
+        COALESCE(ed.agent_credit_void, 0.0)::numeric(19,4)  AS agent_credit_void,
+        COALESCE(ed.agent_credit_net, 0.0)::numeric(19,4)   AS agent_credit_net
     FROM visits_base vb
     LEFT JOIN agent_at_visit aa
         ON aa.gamingday = vb.gamingday
@@ -255,12 +455,24 @@ day_rows AS (
     LEFT JOIN sess_day s
         ON s.gamingday = vb.gamingday
        AND s.membership = vb.membership
+    LEFT JOIN sess_time_day st
+        ON st.gamingday = vb.gamingday
+       AND st.membership = vb.membership
     LEFT JOIN drop_clean dc
         ON dc.gamingday = vb.gamingday
        AND dc.membership = vb.membership
     LEFT JOIN system_drop sd
         ON sd.gamingday = vb.gamingday
        AND sd.membership = vb.membership
+    LEFT JOIN slot_day sl
+        ON sl.gamingday = vb.gamingday
+       AND sl.membership = vb.membership
+    LEFT JOIN tracking_day td
+        ON td.gamingday = vb.gamingday
+       AND td.membership = vb.membership
+    LEFT JOIN expense_day ed
+        ON ed.gamingday = vb.gamingday
+       AND ed.membership = vb.membership
 )
 SELECT *
 FROM day_rows
@@ -270,6 +482,8 @@ $$;
 CREATE TABLE IF NOT EXISTS silver.fact_membership_day (
     gamingday               date NOT NULL,
     membership              bigint NOT NULL,
+    surname                 text,
+    forename                text,
     idagent                 int,
     agentname               text,
     citizenshipcountry      text,
@@ -285,9 +499,56 @@ CREATE TABLE IF NOT EXISTS silver.fact_membership_day (
     junketdeposit_withdraw  numeric(19,4) NOT NULL,
     junketdeposit_net       numeric(19,4) NOT NULL,
     sessionscnt             bigint NOT NULL,
+    minutes_played          numeric(19,4) NOT NULL DEFAULT 0,
+    slot_totalbet           numeric(19,4) NOT NULL DEFAULT 0,
+    slot_cashbet            numeric(19,4) NOT NULL DEFAULT 0,
+    slot_totalout           numeric(19,4) NOT NULL DEFAULT 0,
+    slot_win                numeric(19,4) NOT NULL DEFAULT 0,
+    slot_nwl                numeric(19,4) NOT NULL DEFAULT 0,
+    slot_billdrop           numeric(19,4) NOT NULL DEFAULT 0,
+    slot_gamesplayed        numeric(19,4) NOT NULL DEFAULT 0,
+    slot_sessions_cnt       bigint NOT NULL DEFAULT 0,
+    tracking_floatin        numeric(19,4) NOT NULL DEFAULT 0,
+    tracking_floatout       numeric(19,4) NOT NULL DEFAULT 0,
+    tracking_net            numeric(19,4) NOT NULL DEFAULT 0,
+    expense_total           numeric(19,4) NOT NULL DEFAULT 0,
+    expense_airtickets      numeric(19,4) NOT NULL DEFAULT 0,
+    expense_discount_plus   numeric(19,4) NOT NULL DEFAULT 0,
+    expense_hotel           numeric(19,4) NOT NULL DEFAULT 0,
+    expense_other           numeric(19,4) NOT NULL DEFAULT 0,
+    discount_lg             numeric(19,4) NOT NULL DEFAULT 0,
+    discount_slot           numeric(19,4) NOT NULL DEFAULT 0,
+    agent_credit_out        numeric(19,4) NOT NULL DEFAULT 0,
+    agent_credit_void       numeric(19,4) NOT NULL DEFAULT 0,
+    agent_credit_net        numeric(19,4) NOT NULL DEFAULT 0,
     loaded_at_utc           timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (gamingday, membership)
 );
+
+ALTER TABLE silver.fact_membership_day ADD COLUMN IF NOT EXISTS surname text;
+ALTER TABLE silver.fact_membership_day ADD COLUMN IF NOT EXISTS forename text;
+ALTER TABLE silver.fact_membership_day ADD COLUMN IF NOT EXISTS minutes_played numeric(19,4) NOT NULL DEFAULT 0;
+ALTER TABLE silver.fact_membership_day ADD COLUMN IF NOT EXISTS tracking_floatin numeric(19,4) NOT NULL DEFAULT 0;
+ALTER TABLE silver.fact_membership_day ADD COLUMN IF NOT EXISTS tracking_floatout numeric(19,4) NOT NULL DEFAULT 0;
+ALTER TABLE silver.fact_membership_day ADD COLUMN IF NOT EXISTS tracking_net numeric(19,4) NOT NULL DEFAULT 0;
+ALTER TABLE silver.fact_membership_day ADD COLUMN IF NOT EXISTS slot_totalbet numeric(19,4) NOT NULL DEFAULT 0;
+ALTER TABLE silver.fact_membership_day ADD COLUMN IF NOT EXISTS slot_cashbet numeric(19,4) NOT NULL DEFAULT 0;
+ALTER TABLE silver.fact_membership_day ADD COLUMN IF NOT EXISTS slot_totalout numeric(19,4) NOT NULL DEFAULT 0;
+ALTER TABLE silver.fact_membership_day ADD COLUMN IF NOT EXISTS slot_win numeric(19,4) NOT NULL DEFAULT 0;
+ALTER TABLE silver.fact_membership_day ADD COLUMN IF NOT EXISTS slot_nwl numeric(19,4) NOT NULL DEFAULT 0;
+ALTER TABLE silver.fact_membership_day ADD COLUMN IF NOT EXISTS slot_billdrop numeric(19,4) NOT NULL DEFAULT 0;
+ALTER TABLE silver.fact_membership_day ADD COLUMN IF NOT EXISTS slot_gamesplayed numeric(19,4) NOT NULL DEFAULT 0;
+ALTER TABLE silver.fact_membership_day ADD COLUMN IF NOT EXISTS slot_sessions_cnt bigint NOT NULL DEFAULT 0;
+ALTER TABLE silver.fact_membership_day ADD COLUMN IF NOT EXISTS expense_total numeric(19,4) NOT NULL DEFAULT 0;
+ALTER TABLE silver.fact_membership_day ADD COLUMN IF NOT EXISTS expense_airtickets numeric(19,4) NOT NULL DEFAULT 0;
+ALTER TABLE silver.fact_membership_day ADD COLUMN IF NOT EXISTS expense_discount_plus numeric(19,4) NOT NULL DEFAULT 0;
+ALTER TABLE silver.fact_membership_day ADD COLUMN IF NOT EXISTS expense_hotel numeric(19,4) NOT NULL DEFAULT 0;
+ALTER TABLE silver.fact_membership_day ADD COLUMN IF NOT EXISTS expense_other numeric(19,4) NOT NULL DEFAULT 0;
+ALTER TABLE silver.fact_membership_day ADD COLUMN IF NOT EXISTS discount_lg numeric(19,4) NOT NULL DEFAULT 0;
+ALTER TABLE silver.fact_membership_day ADD COLUMN IF NOT EXISTS discount_slot numeric(19,4) NOT NULL DEFAULT 0;
+ALTER TABLE silver.fact_membership_day ADD COLUMN IF NOT EXISTS agent_credit_out numeric(19,4) NOT NULL DEFAULT 0;
+ALTER TABLE silver.fact_membership_day ADD COLUMN IF NOT EXISTS agent_credit_void numeric(19,4) NOT NULL DEFAULT 0;
+ALTER TABLE silver.fact_membership_day ADD COLUMN IF NOT EXISTS agent_credit_net numeric(19,4) NOT NULL DEFAULT 0;
 
 CREATE INDEX IF NOT EXISTS idx_silver_fact_membership_day_mem
     ON silver.fact_membership_day(membership);
@@ -309,6 +570,8 @@ BEGIN
     INSERT INTO silver.fact_membership_day (
         gamingday,
         membership,
+        surname,
+        forename,
         idagent,
         agentname,
         citizenshipcountry,
@@ -323,11 +586,35 @@ BEGIN
         junketdeposit_add,
         junketdeposit_withdraw,
         junketdeposit_net,
-        sessionscnt
+        sessionscnt,
+        minutes_played,
+        slot_totalbet,
+        slot_cashbet,
+        slot_totalout,
+        slot_win,
+        slot_nwl,
+        slot_billdrop,
+        slot_gamesplayed,
+        slot_sessions_cnt,
+        tracking_floatin,
+        tracking_floatout,
+        tracking_net,
+        expense_total,
+        expense_airtickets,
+        expense_discount_plus,
+        expense_hotel,
+        expense_other,
+        discount_lg,
+        discount_slot,
+        agent_credit_out,
+        agent_credit_void,
+        agent_credit_net
     )
     SELECT
         d.gamingday,
         d.membership,
+        d.surname,
+        d.forename,
         d.idagent,
         d.agentname,
         d.citizenshipcountry,
@@ -342,7 +629,29 @@ BEGIN
         d.junketdeposit_add,
         d.junketdeposit_withdraw,
         d.junketdeposit_net,
-        d.sessionscnt
+        d.sessionscnt,
+        d.minutes_played,
+        d.slot_totalbet,
+        d.slot_cashbet,
+        d.slot_totalout,
+        d.slot_win,
+        d.slot_nwl,
+        d.slot_billdrop,
+        d.slot_gamesplayed,
+        d.slot_sessions_cnt,
+        d.tracking_floatin,
+        d.tracking_floatout,
+        d.tracking_net,
+        d.expense_total,
+        d.expense_airtickets,
+        d.expense_discount_plus,
+        d.expense_hotel,
+        d.expense_other,
+        d.discount_lg,
+        d.discount_slot,
+        d.agent_credit_out,
+        d.agent_credit_void,
+        d.agent_credit_net
     FROM silver.fn_membership_day(p_from_date, p_to_date, p_agent_id) d;
 END;
 $$;

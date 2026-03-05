@@ -51,6 +51,12 @@ def _get_data_snapshot(pg_conn_str: str, from_date: str, to_date: str) -> dict[s
                 cur.execute("SELECT COUNT(*) FROM bronze.cashdesk_transactions_raw")
                 bronze_cashdesk_cnt = int(cur.fetchone()[0])
 
+                cur.execute("SELECT COUNT(*) FROM bronze.drgt_sessions_raw")
+                bronze_drgt_cnt = int(cur.fetchone()[0])
+
+                cur.execute("SELECT COUNT(*) FROM bronze.casino_transaction_money_raw")
+                bronze_txmoney_cnt = int(cur.fetchone()[0])
+
                 cur.execute(
                     """
                     SELECT COUNT(*)
@@ -81,6 +87,8 @@ def _get_data_snapshot(pg_conn_str: str, from_date: str, to_date: str) -> dict[s
 
         return {
             "bronze_cashdesk_cnt": bronze_cashdesk_cnt,
+            "bronze_drgt_cnt": bronze_drgt_cnt,
+            "bronze_txmoney_cnt": bronze_txmoney_cnt,
             "silver_cnt": silver_cnt,
             "gold_cnt": gold_cnt,
             "egd_dim_cnt": egd_dim_cnt,
@@ -147,6 +155,8 @@ def update_refresh_note(
 ## Last known validation snapshot
 
 - `bronze.cashdesk_transactions_raw`: {snapshot['bronze_cashdesk_cnt']:,} rows
+- `bronze.drgt_sessions_raw`: {snapshot['bronze_drgt_cnt']:,} rows
+- `bronze.casino_transaction_money_raw`: {snapshot['bronze_txmoney_cnt']:,} rows
 - `silver.fact_membership_day` ({from_date}..{to_date}): {snapshot['silver_cnt']:,} rows
 - `gold.fact_membership_day` ({from_date}..{to_date}): {snapshot['gold_cnt']:,} rows
 - `gold.dim_egd_position`: {snapshot['egd_dim_cnt']} positions ({snapshot['egd_active_cnt']} active)
@@ -231,6 +241,18 @@ def send_status_email(
     logger.info("Status email sent to %s", ", ".join(recipients))
 
 
+def _get_last_gold_day(pg_conn_str: str) -> date | None:
+    """Return the latest gamingday present in gold.fact_membership_day, or None."""
+    try:
+        with psycopg2.connect(pg_conn_str) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT MAX(gamingday) FROM gold.fact_membership_day")
+                row = cur.fetchone()
+                return row[0] if row and row[0] else None
+    except Exception:
+        return None
+
+
 @flow(name="casino-dw-daily")
 def daily_casino_dw(
     bronze_lookback_days: int = 3,
@@ -241,7 +263,9 @@ def daily_casino_dw(
 ) -> dict[str, str]:
     logger = get_run_logger()
 
-    if not os.getenv("MSSQL_CONN_STR") or not os.getenv("PG_CONN_STR"):
+    pg_conn_str = os.getenv("PG_CONN_STR")
+
+    if not os.getenv("MSSQL_CONN_STR") or not pg_conn_str:
         raise RuntimeError("MSSQL_CONN_STR and PG_CONN_STR must be set in environment")
 
     if not os.getenv("MSSQL_CIBATUMI_CONN_STR"):
@@ -252,10 +276,27 @@ def daily_casino_dw(
     else:
         anchor_date = date.fromisoformat(to_date)
 
+    yesterday = get_previous_day(anchor_date)
+
     if use_previous_day_window:
-        previous_day = get_previous_day(anchor_date)
-        from_date_obj = previous_day
-        to_date_obj = previous_day
+        # Auto-catchup: check last refreshed day in gold
+        last_gold_day = _get_last_gold_day(pg_conn_str)
+
+        if last_gold_day is not None and last_gold_day < yesterday:
+            # Missed days detected — refresh from last_gold_day through yesterday
+            from_date_obj = last_gold_day
+            to_date_obj = yesterday
+            logger.info(
+                "Catchup mode: last gold day is %s, refreshing %s..%s (%s missed days)",
+                last_gold_day.isoformat(),
+                from_date_obj.isoformat(),
+                to_date_obj.isoformat(),
+                (yesterday - last_gold_day).days,
+            )
+        else:
+            # Normal daily: just yesterday
+            from_date_obj = yesterday
+            to_date_obj = yesterday
     else:
         to_date_obj = anchor_date
         from_date_obj = to_date_obj - timedelta(days=gold_refresh_lookback_days)
@@ -293,4 +334,21 @@ def daily_casino_dw(
 
 
 if __name__ == "__main__":
-    daily_casino_dw()
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--serve",
+        action="store_true",
+        help="Run as a scheduled service (cron: daily at 06:00 UTC+4)",
+    )
+    parser.add_argument("--cron", default="0 6 * * *", help="Cron schedule (default: 06:00 daily)")
+    cli_args = parser.parse_args()
+
+    if cli_args.serve:
+        daily_casino_dw.serve(
+            name="casino-dw-daily-scheduled",
+            cron=cli_args.cron,
+        )
+    else:
+        daily_casino_dw()

@@ -36,15 +36,19 @@ SOURCE_TABLES = [
         "watermark_column": "dateChange",
         "watermark_type": "datetime",
         "select_sql": """
-            SELECT Membership, idAgent, dateChange, Created
+            SELECT Membership, idAgent, CAST(dateChange AS datetime) AS dateChange, Created
             FROM Manage.Agents_Players
-            WHERE (? IS NULL OR dateChange > ?)
+            WHERE (? IS NULL OR CAST(dateChange AS datetime) > ?)
               AND Membership IS NOT NULL
         """,
         "target_sql": """
             INSERT INTO bronze.manage_agents_players_raw
                 (membership, idagent, datechange, created)
             VALUES (%s, %s, %s, %s)
+            ON CONFLICT (membership, datechange) DO UPDATE SET
+                idagent = EXCLUDED.idagent,
+                created = EXCLUDED.created,
+                _loaded_at_utc = now()
         """,
         "watermark_getter": lambda row: row[2],
     },
@@ -84,17 +88,19 @@ SOURCE_TABLES = [
         "watermark_column": "Membership",
         "watermark_type": "int",
         "select_sql": """
-            SELECT Membership, idAgent, idCountry
+            SELECT Membership, idAgent, idCountry, Surname, Forename
             FROM Person.Players
             WHERE (? IS NULL OR Membership > ?)
         """,
         "target_sql": """
             INSERT INTO bronze.person_players_raw
-                (membership, idagent, idcountry)
-            VALUES (%s, %s, %s)
+                (membership, idagent, idcountry, surname, forename)
+            VALUES (%s, %s, %s, %s, %s)
             ON CONFLICT (membership) DO UPDATE SET
                 idagent = EXCLUDED.idagent,
                 idcountry = EXCLUDED.idcountry,
+                surname = EXCLUDED.surname,
+                forename = EXCLUDED.forename,
                 _loaded_at_utc = now()
         """,
         "watermark_getter": lambda row: row[0],
@@ -136,6 +142,42 @@ SOURCE_TABLES = [
                 _loaded_at_utc = now()
         """,
         "watermark_getter": lambda row: row[0],
+    },
+    {
+        "source_name": "CashDesk.Articles",
+        "watermark_column": "__full_snapshot__",
+        "full_snapshot": True,
+        "select_sql": """
+            SELECT idArticle, pidArticle, nameArticle, codeArticle,
+                   isPlayerExpense, isIncome, isRestaurant, listOrder_Article
+            FROM CashDesk.Articles
+        """,
+        "target_sql": """
+            INSERT INTO bronze.cashdesk_articles_raw
+                (idarticle, pidarticle, namearticle, codearticle,
+                 isplayerexpense, isincome, isrestaurant, listorder_article)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (idarticle) DO UPDATE SET
+                pidarticle = EXCLUDED.pidarticle,
+                namearticle = EXCLUDED.namearticle,
+                codearticle = EXCLUDED.codearticle,
+                isplayerexpense = EXCLUDED.isplayerexpense,
+                isincome = EXCLUDED.isincome,
+                isrestaurant = EXCLUDED.isrestaurant,
+                listorder_article = EXCLUDED.listorder_article,
+                _loaded_at_utc = now()
+        """,
+        "watermark_getter": lambda row: None,
+        "row_mapper": lambda row: (
+            row[0],
+            row[1],
+            row[2],
+            row[3],
+            None if row[4] is None else bool(row[4]),
+            None if row[5] is None else bool(row[5]),
+            None if row[6] is None else bool(row[6]),
+            row[7],
+        ),
     },
     {
         "source_name": "Casino.Games",
@@ -281,7 +323,8 @@ SOURCE_TABLES = [
         "lookback_days": DEFAULT_LOOKBACK_DAYS,
         "select_sql": """
             SELECT idOper, dateWork, timeOper, Membership, idAccount, directionOper,
-                   TotalMoneyUE, ChipsUE, isDeleted, isCalculatedInDrop
+                   TotalMoneyUE, ChipsUE, isDeleted, isCalculatedInDrop,
+                   idArticle, Comment
             FROM CashDesk.view_Transactions
             WHERE ((? IS NULL OR idOper > ?) OR dateWork >= ?)
               AND Membership IS NOT NULL
@@ -289,8 +332,9 @@ SOURCE_TABLES = [
         "target_sql": """
             INSERT INTO bronze.cashdesk_transactions_raw
                 (idoper, datework, timeoper, membership, idaccount, directionoper,
-                 totalmoneyue, chipsue, isdeleted, iscalculatedindrop)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                 totalmoneyue, chipsue, isdeleted, iscalculatedindrop,
+                 idarticle, comment)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (idoper) DO UPDATE SET
                 datework = EXCLUDED.datework,
                 timeoper = EXCLUDED.timeoper,
@@ -301,6 +345,8 @@ SOURCE_TABLES = [
                 chipsue = EXCLUDED.chipsue,
                 isdeleted = EXCLUDED.isdeleted,
                 iscalculatedindrop = EXCLUDED.iscalculatedindrop,
+                idarticle = EXCLUDED.idarticle,
+                comment = EXCLUDED.comment,
                 _loaded_at_utc = now()
         """,
         "watermark_getter": lambda row: row[0],
@@ -315,6 +361,8 @@ SOURCE_TABLES = [
             row[7],
             None if row[8] is None else bool(row[8]),
             None if row[9] is None else bool(row[9]),
+            row[10],
+            row[11],
         ),
     },
     {
@@ -379,6 +427,223 @@ SOURCE_TABLES = [
             row[14], row[15], row[16],
         ),
         "watermark_getter": lambda row: row[0],
+    },
+    {
+        "source_name": "DRGT.Sessions",
+        "watermark_column": "ID_SESSION",
+        "watermark_type": "int",
+        "lookback_days": DEFAULT_LOOKBACK_DAYS,
+        "select_sql": """
+            SELECT PlayerId, IpAddr, ID_SESSION, GamingDay,
+                   StartTimeLocal, EndTimeLocal,
+                   TotalBet, PromoBet, CashBet, TotalOut,
+                   GamesPlayed, Win, NWL, BillDrop
+            FROM DRGT.Sessions
+            WHERE ((? IS NULL OR ID_SESSION > ?) OR GamingDay >= ?)
+              AND PlayerId IS NOT NULL
+        """,
+        "target_sql": """
+            INSERT INTO bronze.drgt_sessions_raw
+                (playerid, ipaddr, id_session, gamingday,
+                 starttimelocal, endtimelocal,
+                 totalbet, promobet, cashbet, totalout,
+                 gamesplayed, win, nwl, billdrop)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (playerid, id_session) DO UPDATE SET
+                ipaddr = EXCLUDED.ipaddr,
+                gamingday = EXCLUDED.gamingday,
+                starttimelocal = EXCLUDED.starttimelocal,
+                endtimelocal = EXCLUDED.endtimelocal,
+                totalbet = EXCLUDED.totalbet,
+                promobet = EXCLUDED.promobet,
+                cashbet = EXCLUDED.cashbet,
+                totalout = EXCLUDED.totalout,
+                gamesplayed = EXCLUDED.gamesplayed,
+                win = EXCLUDED.win,
+                nwl = EXCLUDED.nwl,
+                billdrop = EXCLUDED.billdrop,
+                _loaded_at_utc = now()
+        """,
+        "watermark_getter": lambda row: row[2],
+    },
+    {
+        "source_name": "Casino.Transaction_Money",
+        "watermark_column": "idOper",
+        "watermark_type": "int",
+        "select_sql": """
+            SELECT idOper, idMoney, sumMoney, ExchRate, ExchRate_Main
+            FROM Casino.Transaction_Money
+            WHERE (? IS NULL OR idOper > ?)
+        """,
+        "target_sql": """
+            INSERT INTO bronze.casino_transaction_money_raw
+                (idoper, idmoney, summoney, exchrate, exchrate_main)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (idoper, idmoney) DO UPDATE SET
+                summoney = EXCLUDED.summoney,
+                exchrate = EXCLUDED.exchrate,
+                exchrate_main = EXCLUDED.exchrate_main,
+                _loaded_at_utc = now()
+        """,
+        "watermark_getter": lambda row: row[0],
+    },
+    {
+        "source_name": "Casino.Chips",
+        "watermark_column": "__full_snapshot__",
+        "full_snapshot": True,
+        "select_sql": """
+            SELECT idChip, valueChip
+            FROM Casino.Chips
+        """,
+        "target_sql": """
+            INSERT INTO bronze.casino_chips_raw
+                (idchip, valuechip)
+            VALUES (%s, %s)
+            ON CONFLICT (idchip) DO UPDATE SET
+                valuechip = EXCLUDED.valuechip,
+                _loaded_at_utc = now()
+        """,
+        "watermark_getter": lambda row: None,
+    },
+    {
+        "source_name": "Manage.PlayerSession_Details",
+        "watermark_column": "idPlayerSessionDetail",
+        "watermark_type": "int",
+        "select_sql": """
+            SELECT idPlayerSessionDetail, idPlayerSession
+            FROM Manage.PlayerSession_Details
+            WHERE (? IS NULL OR idPlayerSessionDetail > ?)
+        """,
+        "target_sql": """
+            INSERT INTO bronze.manage_player_session_details_raw
+                (idplayersessiondetail, idplayersession)
+            VALUES (%s, %s)
+            ON CONFLICT (idplayersessiondetail) DO UPDATE SET
+                idplayersession = EXCLUDED.idplayersession,
+                _loaded_at_utc = now()
+        """,
+        "watermark_getter": lambda row: row[0],
+    },
+    {
+        "source_name": "Manage.PlayerSession_Detail_Chips",
+        "watermark_column": "idPlayerSessionDetail",
+        "watermark_type": "int",
+        "select_sql": """
+            SELECT idPlayerSessionDetail, idChip, qntChips
+            FROM Manage.PlayerSession_Detail_Chips
+            WHERE (? IS NULL OR idPlayerSessionDetail > ?)
+        """,
+        "target_sql": """
+            INSERT INTO bronze.manage_player_session_detail_chips_raw
+                (idplayersessiondetail, idchip, qntchips)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (idplayersessiondetail, idchip) DO UPDATE SET
+                qntchips = EXCLUDED.qntchips,
+                _loaded_at_utc = now()
+        """,
+        "watermark_getter": lambda row: row[0],
+    },
+    {
+        "source_name": "Promo.PlayerBonuses",
+        "watermark_column": "idPlayerBonus",
+        "watermark_type": "int",
+        "lookback_days": DEFAULT_LOOKBACK_DAYS,
+        "select_sql": """
+            SELECT idPlayerBonus, typeOper, dateWork, timeOper, Membership,
+                   idHall, idPlayersTracking, idPlayerSession,
+                   idBonusIndicator, idPresentType, idOper,
+                   sumBonuses, isVisit, idGame, idSlotManufacturer,
+                   multiplierLoyalty, hours, handsPerHour, averBet, percentADT,
+                   Comment, isDeleted, costBonuses
+            FROM Promo.PlayerBonuses
+            WHERE ((? IS NULL OR idPlayerBonus > ?) OR dateWork >= ?)
+        """,
+        "target_sql": """
+            INSERT INTO bronze.promo_player_bonuses_raw
+                (idplayerbonus, typeoper, datework, timeoper, membership,
+                 idhall, idplayerstracking, idplayersession,
+                 idbonusindicator, idpresenttype, idoper,
+                 sumbonuses, isvisit, idgame, idslotmanufacturer,
+                 multiplierloyalty, hours, handsperhour, averbet, percentadt,
+                 comment, isdeleted, costbonuses)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (idplayerbonus) DO UPDATE SET
+                typeoper = EXCLUDED.typeoper,
+                datework = EXCLUDED.datework,
+                timeoper = EXCLUDED.timeoper,
+                membership = EXCLUDED.membership,
+                idhall = EXCLUDED.idhall,
+                idplayerstracking = EXCLUDED.idplayerstracking,
+                idplayersession = EXCLUDED.idplayersession,
+                idbonusindicator = EXCLUDED.idbonusindicator,
+                idpresenttype = EXCLUDED.idpresenttype,
+                idoper = EXCLUDED.idoper,
+                sumbonuses = EXCLUDED.sumbonuses,
+                isvisit = EXCLUDED.isvisit,
+                idgame = EXCLUDED.idgame,
+                idslotmanufacturer = EXCLUDED.idslotmanufacturer,
+                multiplierloyalty = EXCLUDED.multiplierloyalty,
+                hours = EXCLUDED.hours,
+                handsperhour = EXCLUDED.handsperhour,
+                averbet = EXCLUDED.averbet,
+                percentadt = EXCLUDED.percentadt,
+                comment = EXCLUDED.comment,
+                isdeleted = EXCLUDED.isdeleted,
+                costbonuses = EXCLUDED.costbonuses,
+                _loaded_at_utc = now()
+        """,
+        "watermark_getter": lambda row: row[0],
+        "row_mapper": lambda row: (
+            row[0], row[1], row[2], row[3], row[4],
+            row[5], row[6], row[7], row[8], row[9], row[10],
+            row[11],
+            None if row[12] is None else bool(row[12]),
+            row[13], row[14], row[15], row[16], row[17], row[18], row[19],
+            row[20],
+            None if row[21] is None else bool(row[21]),
+            row[22],
+        ),
+    },
+    {
+        "source_name": "Promo.BonusIndicators",
+        "watermark_column": "__full_snapshot__",
+        "full_snapshot": True,
+        "select_sql": """
+            SELECT idBonusIndicator, codeBonusIndicator, nameBonusIndicator
+            FROM Promo.BonusIndicators
+        """,
+        "target_sql": """
+            INSERT INTO bronze.promo_bonus_indicators_raw
+                (idbonusindicator, codebonusindicator, namebonusindicator)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (idbonusindicator) DO UPDATE SET
+                codebonusindicator = EXCLUDED.codebonusindicator,
+                namebonusindicator = EXCLUDED.namebonusindicator,
+                _loaded_at_utc = now()
+        """,
+        "watermark_getter": lambda row: None,
+    },
+    {
+        "source_name": "Promo.BonusIndicators_Games",
+        "watermark_column": "__full_snapshot__",
+        "full_snapshot": True,
+        "select_sql": """
+            SELECT idGame, idSlotManufacturer, dateChange,
+                   multiplierLoyalty, handsPerHour, percentADT
+            FROM Promo.BonusIndicators_Games
+        """,
+        "target_sql": """
+            INSERT INTO bronze.promo_bonus_indicators_games_raw
+                (idgame, idslotmanufacturer, datechange,
+                 multiplierloyalty, handsperhour, percentadt)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT (COALESCE(idgame, -1), COALESCE(idslotmanufacturer, -1), datechange) DO UPDATE SET
+                multiplierloyalty = EXCLUDED.multiplierloyalty,
+                handsperhour = EXCLUDED.handsperhour,
+                percentadt = EXCLUDED.percentadt,
+                _loaded_at_utc = now()
+        """,
+        "watermark_getter": lambda row: None,
     },
     {
         "source_name": "Manage.view_PlayersTracking",

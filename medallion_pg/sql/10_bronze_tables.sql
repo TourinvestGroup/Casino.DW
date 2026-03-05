@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS bronze.manage_agents_players_raw (
     _source_system      text DEFAULT 'mssql',
     _loaded_at_utc      timestamptz NOT NULL DEFAULT now()
 );
+CREATE UNIQUE INDEX IF NOT EXISTS ux_agents_players_raw_mem_change ON bronze.manage_agents_players_raw(membership, datechange);
 CREATE INDEX IF NOT EXISTS idx_agents_players_raw_mem_change ON bronze.manage_agents_players_raw(membership, datechange DESC);
 
 CREATE TABLE IF NOT EXISTS bronze.manage_agent_groups_raw (
@@ -41,9 +42,13 @@ CREATE TABLE IF NOT EXISTS bronze.person_players_raw (
     membership          bigint PRIMARY KEY,
     idagent             int,
     idcountry           int,
+    surname             text,
+    forename            text,
     _source_system      text DEFAULT 'mssql',
     _loaded_at_utc      timestamptz NOT NULL DEFAULT now()
 );
+ALTER TABLE bronze.person_players_raw ADD COLUMN IF NOT EXISTS surname text;
+ALTER TABLE bronze.person_players_raw ADD COLUMN IF NOT EXISTS forename text;
 
 CREATE TABLE IF NOT EXISTS bronze.manage_agents_raw (
     idagent             int PRIMARY KEY,
@@ -140,11 +145,28 @@ CREATE TABLE IF NOT EXISTS bronze.cashdesk_transactions_raw (
     chipsue             numeric(19,4),
     isdeleted           boolean,
     iscalculatedindrop  boolean,
+    idarticle           int,
+    comment             text,
     _source_system      text DEFAULT 'mssql',
     _loaded_at_utc      timestamptz NOT NULL DEFAULT now()
 );
+ALTER TABLE bronze.cashdesk_transactions_raw ADD COLUMN IF NOT EXISTS idarticle int;
+ALTER TABLE bronze.cashdesk_transactions_raw ADD COLUMN IF NOT EXISTS comment text;
 CREATE INDEX IF NOT EXISTS idx_cashdesk_tx_day_mem ON bronze.cashdesk_transactions_raw(datework, membership);
 CREATE INDEX IF NOT EXISTS idx_cashdesk_tx_mem_time ON bronze.cashdesk_transactions_raw(membership, timeoper);
+
+CREATE TABLE IF NOT EXISTS bronze.cashdesk_articles_raw (
+    idarticle           int PRIMARY KEY,
+    pidarticle          int,
+    namearticle         text,
+    codearticle         text,
+    isplayerexpense     boolean,
+    isincome            boolean,
+    isrestaurant        boolean,
+    listorder_article   int,
+    _source_system      text DEFAULT 'mssql',
+    _loaded_at_utc      timestamptz NOT NULL DEFAULT now()
+);
 
 CREATE TABLE IF NOT EXISTS bronze.casino_transactions_calculated_raw (
     idoper              bigint PRIMARY KEY,
@@ -196,6 +218,122 @@ CREATE TABLE IF NOT EXISTS bronze.casino_players_tracking_raw (
     _loaded_at_utc      timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_players_tracking_day_mem ON bronze.casino_players_tracking_raw(datework, membership);
+
+CREATE TABLE IF NOT EXISTS bronze.drgt_sessions_raw (
+    playerid             bigint NOT NULL,
+    ipaddr               bigint,
+    id_session           int NOT NULL,
+    gamingday            date NOT NULL,
+    starttimelocal       timestamp,
+    endtimelocal         timestamp,
+    totalbet             numeric(19,4),
+    promobet             numeric(19,4),
+    cashbet              numeric(19,4),
+    totalout             numeric(19,4),
+    gamesplayed          numeric(19,4),
+    win                  numeric(19,4),
+    nwl                  numeric(19,4),
+    billdrop             numeric(19,4),
+    _source_system       text DEFAULT 'mssql',
+    _loaded_at_utc       timestamptz NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_drgt_sessions_player_session
+    ON bronze.drgt_sessions_raw(playerid, id_session);
+CREATE INDEX IF NOT EXISTS idx_drgt_sessions_day
+    ON bronze.drgt_sessions_raw(gamingday);
+
+CREATE TABLE IF NOT EXISTS bronze.casino_transaction_money_raw (
+    idoper               bigint NOT NULL,
+    idmoney              int NOT NULL,
+    summoney             numeric(19,4),
+    exchrate             numeric(19,8),
+    exchrate_main        numeric(19,8),
+    _source_system       text DEFAULT 'mssql',
+    _loaded_at_utc       timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (idoper, idmoney)
+);
+
+CREATE TABLE IF NOT EXISTS bronze.manage_player_session_details_raw (
+    idplayersessiondetail  bigint PRIMARY KEY,
+    idplayersession        bigint NOT NULL,
+    _source_system         text DEFAULT 'mssql',
+    _loaded_at_utc         timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_session_details_session
+    ON bronze.manage_player_session_details_raw(idplayersession);
+
+CREATE TABLE IF NOT EXISTS bronze.manage_player_session_detail_chips_raw (
+    idplayersessiondetail  bigint NOT NULL,
+    idchip                 int NOT NULL,
+    qntchips               numeric(19,4),
+    _source_system         text DEFAULT 'mssql',
+    _loaded_at_utc         timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (idplayersessiondetail, idchip)
+);
+
+CREATE TABLE IF NOT EXISTS bronze.casino_chips_raw (
+    idchip                 int PRIMARY KEY,
+    valuechip              numeric(19,4),
+    _source_system         text DEFAULT 'mssql',
+    _loaded_at_utc         timestamptz NOT NULL DEFAULT now()
+);
+
+-- ============================================================
+-- Promo bonus tables
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS bronze.promo_player_bonuses_raw (
+    idplayerbonus        int PRIMARY KEY,
+    typeoper             int,                -- 1=earned, -1=reversed
+    datework             date,
+    timeoper             timestamp,
+    membership           bigint,
+    idhall               int,
+    idplayerstracking    int,
+    idplayersession      int,
+    idbonusindicator     int,
+    idpresenttype        int,
+    idoper               int,
+    sumbonuses           numeric(19,4),
+    isvisit              boolean,
+    idgame               int,
+    idslotmanufacturer   int,
+    multiplierloyalty    numeric(19,4),
+    hours                numeric(19,4),
+    handsperhour         int,
+    averbet              numeric(19,4),
+    percentadt           numeric(19,4),
+    comment              text,
+    isdeleted            boolean,
+    costbonuses          numeric(19,4),
+    _source_system       text DEFAULT 'mssql',
+    _loaded_at_utc       timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_promo_player_bonuses_day_mem
+    ON bronze.promo_player_bonuses_raw(datework, membership);
+CREATE INDEX IF NOT EXISTS idx_promo_player_bonuses_game
+    ON bronze.promo_player_bonuses_raw(idgame);
+
+CREATE TABLE IF NOT EXISTS bronze.promo_bonus_indicators_raw (
+    idbonusindicator     int PRIMARY KEY,
+    codebonusindicator   text,
+    namebonusindicator   text,
+    _source_system       text DEFAULT 'mssql',
+    _loaded_at_utc       timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS bronze.promo_bonus_indicators_games_raw (
+    idgame               int,
+    idslotmanufacturer   int,
+    datechange           date NOT NULL,
+    multiplierloyalty    numeric(19,4),
+    handsperhour         int,
+    percentadt           numeric(19,4),
+    _source_system       text DEFAULT 'mssql',
+    _loaded_at_utc       timestamptz NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_promo_bi_games_key
+    ON bronze.promo_bonus_indicators_games_raw(COALESCE(idgame, -1), COALESCE(idslotmanufacturer, -1), datechange);
 
 -- Future source placeholders (Scenario 2.5, extensible)
 CREATE TABLE IF NOT EXISTS bronze.casino_games_raw (

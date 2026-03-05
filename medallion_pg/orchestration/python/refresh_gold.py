@@ -34,6 +34,22 @@ def main():
             )
             cur.execute(
                 """
+                SELECT gold.sp_load_fact_player_expenses(%s, %s)
+                """,
+                (args.from_date, args.to_date),
+            )
+            print("Gold player expenses refreshed")
+
+            cur.execute(
+                """
+                SELECT gold.sp_load_fact_player_bonuses(%s, %s)
+                """,
+                (args.from_date, args.to_date),
+            )
+            print("Gold player bonuses refreshed")
+
+            cur.execute(
+                """
                 SELECT gold.sp_load_session_marts(%s, %s)
                 """,
                 (args.from_date, args.to_date),
