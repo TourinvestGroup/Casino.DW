@@ -134,11 +134,11 @@ All loads use upsert (`ON CONFLICT ... DO UPDATE SET`) so re-runs are safe.
 
 | Table | Grain | Rows | Description |
 |-------|-------|------|-------------|
-| `gold.fact_membership_day` | gamingday + membership | 247K | Daily player summary: live game drop/cash/sessions, slot metrics, expenses, agent credits, discounts, tracking float, player name + agent + country |
-| `gold.fact_session_day_by_table_game` | gamingday + table + game | 29K | Daily aggregates per physical table and game: session count, member count, drop, hold, chips, avg bet |
+| `gold.fact_membership_day` | gamingday + membership | 248K | Daily player summary: live game drop/cash/sessions, slot metrics, expenses, agent credits, discounts, tracking float, player name + agent + country |
+| `gold.fact_session_day_by_table_game` | gamingday + table + game | 29.5K | Daily aggregates per physical table and game: session count, member count, drop, hold, chips, avg bet |
 | `gold.fact_session_day_by_agent_group` | gamingday + agent group | 2.3K | Daily aggregates per agent group: session count, member count, drop, hold, chips |
 | `gold.fact_player_expenses` | idoper + expense_type_key | 24K | Transaction-level expense detail: amount, article, comment, player + agent context. Covers accounts 641 (operating), 153 (agent credit), 151 (LG discount), 154 (slot discount) |
-| `gold.fact_player_bonuses` | idplayerbonus | 577K | Transaction-level bonus detail: earned amount, game, house edge %, hours played, hands/hour, avg bet, ADT (calculated), comment with formula, player + agent context |
+| `gold.fact_player_bonuses` | idplayerbonus | 578K | Transaction-level bonus detail: earned amount, game, house edge %, hours played, hands/hour, avg bet, ADT (calculated), comment with formula, player + agent context |
 
 #### Dimension Tables
 
@@ -146,8 +146,8 @@ All loads use upsert (`ON CONFLICT ... DO UPDATE SET`) so re-runs are safe.
 |-------|------|-------------|
 | `gold.dim_expense_type` | 8 | Expense category dimension: Air Tickets, Discount+, Hotel, Other (account 641), Agent Out/Void (153), LG Discount (151), Slot Discount (154) |
 | `gold.dim_bonus_indicator` | 9 | Bonus indicator dimension: DropLive, WinLive, LossLive, DropSlot, WinSlot, LossSlot, WinTotal, LossTotal, SlotIn |
-| `gold.dim_egd_position` | 164 | Slot machine floor position dimension: IP address, manufacturer, model, game, serial, active status, lifecycle dates |
-| `gold.bridge_egd_machine_history` | 4.9K | Machine assignment history bridge: which MAC address was at which floor position, with date ranges |
+| `gold.dim_egd_position` | 170 | Slot machine floor position dimension: IP address, manufacturer, model, game, serial, active status, lifecycle dates |
+| `gold.bridge_egd_machine_history` | 5.0K | Machine assignment history bridge: which MAC address was at which floor position, with date ranges |
 
 #### Functions
 
@@ -516,30 +516,30 @@ SELECT * FROM dw_control.sp_bronze_archive_or_purge(DATE '2025-01-01', 'delete_o
 
 ---
 
-## Current Data Volume (as of 2026-03-05)
+## Current Data Volume (as of 2026-03-10)
 
 | Layer | Table | Rows |
 |-------|-------|------|
-| Bronze | `cashdesk_transactions_raw` | 1,048,873 |
-| Bronze | `casino_transaction_money_raw` | 1,716,066 |
-| Bronze | `drgt_sessions_raw` | 2,527,834 |
-| Bronze | `manage_player_sessions_raw` | 569,351 |
-| Bronze | `manage_player_session_details_raw` | 2,790,576 |
-| Bronze | `manage_player_session_detail_chips_raw` | 2,983,421 |
-| Bronze | `promo_player_bonuses_raw` | 577,646 |
+| Bronze | `cashdesk_transactions_raw` | 1,050,474 |
+| Bronze | `casino_transaction_money_raw` | 1,718,561 |
+| Bronze | `drgt_sessions_raw` | 2,530,518 |
+| Bronze | `manage_player_sessions_raw` | 570,282 |
+| Bronze | `manage_player_session_details_raw` | 2,795,724 |
+| Bronze | `manage_player_session_detail_chips_raw` | 2,988,924 |
+| Bronze | `promo_player_bonuses_raw` | 578,647 |
 | Bronze | `person_players_raw` | 194,233 |
-| Bronze | `person_visits_raw` | 162,929 |
-| Bronze | `casino_players_tracking_raw` | 326,963 |
-| Silver | `fact_membership_day` | 247,499 |
-| Silver | `fact_player_session` | 480,838 |
-| Gold | `fact_membership_day` | 247,499 |
-| Gold | `fact_player_bonuses` | 577,406 |
-| Gold | `fact_session_day_by_table_game` | 29,485 |
-| Gold | `fact_player_expenses` | 24,022 |
-| Gold | `fact_session_day_by_agent_group` | 2,281 |
-| Gold | `dim_egd_position` | 164 |
-| Gold | `bridge_egd_machine_history` | 4,930 |
+| Bronze | `person_visits_raw` | 165,170 |
+| Bronze | `casino_players_tracking_raw` | 327,475 |
+| Silver | `fact_membership_day` | 248,033 |
+| Silver | `fact_player_session` | 481,596 |
+| Gold | `fact_membership_day` | 248,033 |
+| Gold | `fact_player_bonuses` | 578,403 |
+| Gold | `fact_session_day_by_table_game` | 29,538 |
+| Gold | `fact_player_expenses` | 24,087 |
+| Gold | `fact_session_day_by_agent_group` | 2,285 |
+| Gold | `dim_egd_position` | 170 |
+| Gold | `bridge_egd_machine_history` | 4,976 |
 | Gold | `dim_bonus_indicator` | 9 |
 | Gold | `dim_expense_type` | 8 |
-| **Total Bronze** | **26 tables** | **~14.5M rows** |
-| **Total Gold** | **7 facts + 3 dims** | **~886K rows** |
+| **Total Bronze** | **26 tables** | **~14.6M rows** |
+| **Total Gold** | **7 facts + 3 dims** | **~888K rows** |
