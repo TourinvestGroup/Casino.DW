@@ -5,7 +5,7 @@
 ![Gold](https://img.shields.io/badge/Gold-7%20Facts%20|%203%20Dims-e6a817)
 ![Last Refresh](https://img.shields.io/badge/Last%20Refresh-see%20LAST__REFRESH.md-1f883d)
 
-Current runtime status is tracked in [LAST_REFRESH.md](LAST_REFRESH.md).
+Current runtime status is tracked in [LAST_REFRESH.md](medallion_pg/LAST_REFRESH.md).
 
 ---
 
