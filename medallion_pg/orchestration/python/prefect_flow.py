@@ -23,7 +23,12 @@ def get_previous_day(anchor_date: date) -> date:
     return anchor_date - timedelta(days=1)
 
 
-def _run_python_script(script_name: str, args: list[str], extra_env: dict[str, str] | None = None) -> None:
+def _run_python_script(
+    script_name: str,
+    args: list[str],
+    extra_env: dict[str, str] | None = None,
+    timeout: int | None = None,
+) -> None:
     env = os.environ.copy()
     if extra_env:
         env.update(extra_env)
@@ -35,6 +40,7 @@ def _run_python_script(script_name: str, args: list[str], extra_env: dict[str, s
         env=env,
         capture_output=True,
         text=True,
+        timeout=timeout,
     )
 
     if result.returncode != 0:
@@ -241,21 +247,31 @@ def send_status_email(
     logger.info("Status email sent to %s", ", ".join(recipients))
 
 
-@task(name="export-visits-report", retries=1, retry_delay_seconds=30)
+@task(name="export-visits-report", retries=0)
 def run_visits_report(from_date: str, to_date: str) -> None:
     """Export the daily visit-sessions xlsx and email it.
 
-    Decoupled from pipeline health: any failure is logged and swallowed so the
-    flow stays green. Operators see report state in flow logs, not in the
-    pipeline status email.
+    Strictly read-only against the warehouse — calls gold.fn_visit_sessions and
+    writes a local xlsx + sends email. No table writes, no schema changes, no
+    interaction with the bronze/silver/gold load path.
+
+    Failure-isolation contract:
+      - retries=0: no Prefect-level retry storm
+      - subprocess timeout: 5 minutes max; SMTP/query hangs cannot stall the flow
+      - inner try/except: any exception is logged and swallowed
+      - flow-level call site is OUTSIDE the pipeline-health try/except, so even
+        if an exception escapes this task, it cannot mark the pipeline failed
     """
     logger = get_run_logger()
     try:
         _run_python_script(
             "export_visit_sessions.py",
             ["--from-date", from_date, "--to-date", to_date],
+            timeout=300,
         )
         logger.info("Daily visits report exported and emailed for %s..%s", from_date, to_date)
+    except subprocess.TimeoutExpired:
+        logger.warning("Visits report timed out after 5 minutes (pipeline still healthy)")
     except Exception as ex:
         logger.warning("Visits report failed silently (pipeline still healthy): %s", ex)
 
@@ -339,15 +355,23 @@ def daily_casino_dw(
         run_gold_refresh(from_date_str, to_date_str, agent_id)
         update_refresh_note("success", from_date_str, to_date_str, None)
         send_status_email("success", from_date_str, to_date_str, None)
-        # Report task: yesterday only, regardless of catchup window — only the
-        # most recent gaming day goes out as the "daily" report.
-        report_day = to_date_str
-        run_visits_report(report_day, report_day)
     except Exception as ex:
         error_text = str(ex)
         update_refresh_note("failed", from_date_str, to_date_str, error_text)
         send_status_email("failed", from_date_str, to_date_str, error_text)
         raise
+
+    # Report runs OUTSIDE the pipeline-health try/except. By design, the report
+    # is a strictly read-only consumer of warehouse data; nothing it does can
+    # mark the data pipeline failed. Outer try/except here is a final safety
+    # net only — the task already swallows its own failures.
+    try:
+        run_visits_report(to_date_str, to_date_str)
+    except Exception as ex:
+        logger.warning(
+            "Visits report task escaped its internal handler — pipeline status unchanged: %s",
+            ex,
+        )
 
     return {
         "status": "success",

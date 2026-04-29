@@ -12,6 +12,22 @@ Each morning, the daily Casino DW pipeline produces a spreadsheet that lists, fo
 - **Format:** `.xlsx`, 8 columns, matches the legacy SSMS export sample
 - **Failure mode:** silent — a failed report does not fail the pipeline; check Prefect logs
 
+## Isolation guarantee — does NOT touch the data pipeline
+
+This report is a **strictly read-only consumer** of the warehouse. Nothing it does can affect bronze/silver/gold loads, schema state, or the daily pipeline status. Specific guarantees, enforced in code:
+
+| Concern | Mitigation | Where |
+|---|---|---|
+| Could it write to the DB? | `gold.fn_visit_sessions` is `STABLE`, returns rows from CTEs only — no INSERT/UPDATE/DELETE/DDL anywhere | [32_gold_visit_sessions_view.sql](../../medallion_pg/sql/32_gold_visit_sessions_view.sql) |
+| Could it create/drop schema objects? | The script issues SELECT only against the function | [export_visit_sessions.py](../../medallion_pg/orchestration/python/export_visit_sessions.py) |
+| Could it mark the pipeline failed? | The report task runs **outside** the pipeline-health `try/except` block. Even if the task raises, status updates are already committed | [prefect_flow.py](../../medallion_pg/orchestration/python/prefect_flow.py) flow body |
+| Could it trigger a false alarm email? | Same as above — the failure email path can only fire on bronze/silver/gold failures | [prefect_flow.py](../../medallion_pg/orchestration/python/prefect_flow.py) `send_status_email` |
+| Could it hang the daily flow? | Subprocess hard-timeout of 5 minutes; SMTP timeout 30s | `_run_python_script(..., timeout=300)` |
+| Could it overload SMTP retries? | `retries=0` on the Prefect task; one attempt, swallow on failure | `@task(name="export-visits-report", retries=0)` |
+| Could it block tomorrow's pipeline? | No — it is the **last** step and runs even if it raises | flow ordering |
+
+If the team distribution is misconfigured or the SMTP server is down, the data pipeline keeps running cleanly tomorrow. The team simply doesn't get a report email that morning, visible in Prefect logs as a `WARNING`.
+
 ## Components
 
 | Layer | Path | Role |
