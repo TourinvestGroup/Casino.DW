@@ -241,6 +241,25 @@ def send_status_email(
     logger.info("Status email sent to %s", ", ".join(recipients))
 
 
+@task(name="export-visits-report", retries=1, retry_delay_seconds=30)
+def run_visits_report(from_date: str, to_date: str) -> None:
+    """Export the daily visit-sessions xlsx and email it.
+
+    Decoupled from pipeline health: any failure is logged and swallowed so the
+    flow stays green. Operators see report state in flow logs, not in the
+    pipeline status email.
+    """
+    logger = get_run_logger()
+    try:
+        _run_python_script(
+            "export_visit_sessions.py",
+            ["--from-date", from_date, "--to-date", to_date],
+        )
+        logger.info("Daily visits report exported and emailed for %s..%s", from_date, to_date)
+    except Exception as ex:
+        logger.warning("Visits report failed silently (pipeline still healthy): %s", ex)
+
+
 def _get_last_gold_day(pg_conn_str: str) -> date | None:
     """Return the latest gamingday present in gold.fact_membership_day, or None."""
     try:
@@ -320,6 +339,10 @@ def daily_casino_dw(
         run_gold_refresh(from_date_str, to_date_str, agent_id)
         update_refresh_note("success", from_date_str, to_date_str, None)
         send_status_email("success", from_date_str, to_date_str, None)
+        # Report task: yesterday only, regardless of catchup window — only the
+        # most recent gaming day goes out as the "daily" report.
+        report_day = to_date_str
+        run_visits_report(report_day, report_day)
     except Exception as ex:
         error_text = str(ex)
         update_refresh_note("failed", from_date_str, to_date_str, error_text)
