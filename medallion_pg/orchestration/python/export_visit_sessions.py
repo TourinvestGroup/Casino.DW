@@ -156,6 +156,7 @@ def send_report(
     # SMTP_FROM_EMAIL. Lets the report carry a branded sender (e.g. data@)
     # without changing the pipeline-status email's From: address.
     smtp_from = os.getenv("REPORT_FROM_EMAIL") or os.getenv("SMTP_FROM_EMAIL")
+    smtp_reply_to = os.getenv("REPORT_REPLY_TO_EMAIL")  # optional
 
     if not smtp_host or not smtp_from:
         raise RuntimeError("SMTP_HOST and one of (REPORT_FROM_EMAIL | SMTP_FROM_EMAIL) must be set")
@@ -184,6 +185,8 @@ def send_report(
     msg = EmailMessage()
     msg["Subject"] = subject
     msg["From"] = smtp_from
+    if smtp_reply_to:
+        msg["Reply-To"] = smtp_reply_to
     msg["To"] = ", ".join(recipients)
     msg.set_content(body)
 
