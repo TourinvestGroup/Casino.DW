@@ -3,7 +3,16 @@
 Pulls one row per (visit x overlapping game session) from gold.fn_visit_sessions,
 writes an .xlsx matching the legacy Casino Daily Analysis template, and emails it.
 
-Run standalone or invoke from prefect_flow.py.
+Recipient routing:
+  - REPORT_TO_EMAILS_SAFE: always-on recipients (default: data@)
+  - REPORT_TO_EMAILS_TEAM: added only when the data pipeline is healthy
+    (i.e., gold.fact_membership_day has rows for the report date)
+
+If the pipeline is degraded (no rows for the target gaming day), the team list
+is dropped and the email goes only to SAFE recipients with a [DEGRADED] subject
+tag and a body note. The team is intentionally not paged about broken runs.
+
+Run standalone (Task Scheduler at 07:00) — no Prefect dependency.
 Defaults to yesterday (UTC).
 """
 from __future__ import annotations
@@ -12,7 +21,7 @@ import argparse
 import os
 import smtplib
 import sys
-from datetime import date, datetime, time as dtime, timedelta, timezone
+from datetime import datetime, time as dtime, timedelta, timezone
 from email.message import EmailMessage
 from pathlib import Path
 
@@ -44,6 +53,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--from-date", default=yesterday, help="YYYY-MM-DD (default: yesterday UTC)")
     parser.add_argument("--to-date", default=yesterday, help="YYYY-MM-DD (default: yesterday UTC)")
     parser.add_argument("--no-email", action="store_true", help="Generate the file only, skip SMTP")
+    parser.add_argument("--force-degraded", action="store_true",
+                        help="Force degraded mode (skip team list) — for testing the safety path")
     return parser.parse_args()
 
 
@@ -59,6 +70,33 @@ def fetch_rows(pg_conn_str: str, from_date: str, to_date: str) -> list[tuple]:
                 (from_date, to_date),
             )
             return cur.fetchall()
+
+
+def pipeline_is_healthy(pg_conn_str: str, target_date: str) -> bool:
+    """Return True iff gold.fact_membership_day has any rows for target_date.
+
+    Healthy means the daily DW pipeline has produced data for the report date.
+    Degraded means the pipeline didn't run, failed, or hadn't reached this date
+    yet — in which case the report goes only to the SAFE recipient list.
+    """
+    with psycopg2.connect(pg_conn_str) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) FROM gold.fact_membership_day WHERE gamingday = %s::date",
+                (target_date,),
+            )
+            return cur.fetchone()[0] > 0
+
+
+def resolve_recipients(healthy: bool) -> tuple[list[str], list[str]]:
+    """Return (recipients, dropped_team_recipients) given pipeline health."""
+    safe = [e.strip() for e in (os.getenv("REPORT_TO_EMAILS_SAFE") or "").split(",") if e.strip()]
+    team = [e.strip() for e in (os.getenv("REPORT_TO_EMAILS_TEAM") or "").split(",") if e.strip()]
+    if not safe:
+        raise RuntimeError("REPORT_TO_EMAILS_SAFE must be set (at minimum)")
+    if healthy:
+        return safe + team, []
+    return safe, team
 
 
 def _trunc_minute(t):
@@ -99,31 +137,49 @@ def write_xlsx(rows: list[tuple], out_path: Path) -> None:
     wb.save(out_path)
 
 
-def send_report(file_path: Path, from_date: str, to_date: str, row_count: int) -> None:
+def send_report(
+    file_path: Path,
+    from_date: str,
+    to_date: str,
+    row_count: int,
+    recipients: list[str],
+    dropped_team: list[str],
+    healthy: bool,
+) -> None:
     smtp_host = os.getenv("SMTP_HOST")
     smtp_port = int(os.getenv("SMTP_PORT", "587"))
     smtp_user = os.getenv("SMTP_USERNAME")
     smtp_password = os.getenv("SMTP_PASSWORD")
     smtp_use_tls = os.getenv("SMTP_USE_TLS", "true").lower() == "true"
     smtp_use_ssl = os.getenv("SMTP_USE_SSL", "false").lower() == "true"
-    smtp_from = os.getenv("SMTP_FROM_EMAIL")
-    smtp_to = os.getenv("REPORT_TO_EMAILS")
+    # Report uses REPORT_FROM_EMAIL if set, else falls back to the global
+    # SMTP_FROM_EMAIL. Lets the report carry a branded sender (e.g. data@)
+    # without changing the pipeline-status email's From: address.
+    smtp_from = os.getenv("REPORT_FROM_EMAIL") or os.getenv("SMTP_FROM_EMAIL")
 
-    if not smtp_host or not smtp_from or not smtp_to:
-        raise RuntimeError("SMTP_HOST, SMTP_FROM_EMAIL, and REPORT_TO_EMAILS must be set")
-
-    recipients = [e.strip() for e in smtp_to.split(",") if e.strip()]
-    if not recipients:
-        raise RuntimeError("REPORT_TO_EMAILS is empty")
+    if not smtp_host or not smtp_from:
+        raise RuntimeError("SMTP_HOST and one of (REPORT_FROM_EMAIL | SMTP_FROM_EMAIL) must be set")
 
     window = from_date if from_date == to_date else f"{from_date}..{to_date}"
-    subject = f"Casino Daily Visits Report - {window}"
-    body = (
-        "Daily visit-sessions report attached.\n\n"
-        f"Gaming day window: {window}\n"
-        f"Rows: {row_count}\n"
-        f"File: {file_path.name}\n"
-    )
+    subject_tag = "" if healthy else "[DEGRADED] "
+    subject = f"{subject_tag}Casino Daily Visits Report - {window}"
+
+    body_lines = [
+        "Daily visit-sessions report attached.",
+        "",
+        f"Gaming day window: {window}",
+        f"Rows: {row_count}",
+        f"File: {file_path.name}",
+    ]
+    if not healthy:
+        body_lines += [
+            "",
+            "WARNING: The data pipeline did not produce gold.fact_membership_day rows",
+            "for this gaming day at the time the report was generated. The attached",
+            f"file may be stale or empty. Team distribution ({len(dropped_team)} recipients)",
+            "was suppressed for this run; only the safe recipient list received this email.",
+        ]
+    body = "\n".join(body_lines) + "\n"
 
     msg = EmailMessage()
     msg["Subject"] = subject
@@ -152,7 +208,10 @@ def send_report(file_path: Path, from_date: str, to_date: str, row_count: int) -
                 server.login(smtp_user, smtp_password)
             server.send_message(msg)
 
-    print(f"Emailed {file_path.name} to {', '.join(recipients)}")
+    health_label = "healthy" if healthy else "DEGRADED"
+    print(f"Emailed {file_path.name} ({health_label}) to {', '.join(recipients)}")
+    if dropped_team:
+        print(f"Team distribution suppressed: {', '.join(dropped_team)}")
 
 
 def main() -> int:
@@ -167,7 +226,13 @@ def main() -> int:
     print(f"Wrote {len(rows)} rows -> {out_path}")
 
     if not args.no_email:
-        send_report(out_path, args.from_date, args.to_date, len(rows))
+        if args.force_degraded:
+            healthy = False
+        else:
+            healthy = pipeline_is_healthy(pg_conn_str, args.to_date)
+        recipients, dropped = resolve_recipients(healthy)
+        send_report(out_path, args.from_date, args.to_date, len(rows),
+                    recipients, dropped, healthy)
 
     return 0
 

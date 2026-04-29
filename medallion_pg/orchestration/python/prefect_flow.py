@@ -247,35 +247,6 @@ def send_status_email(
     logger.info("Status email sent to %s", ", ".join(recipients))
 
 
-@task(name="export-visits-report", retries=0)
-def run_visits_report(from_date: str, to_date: str) -> None:
-    """Export the daily visit-sessions xlsx and email it.
-
-    Strictly read-only against the warehouse — calls gold.fn_visit_sessions and
-    writes a local xlsx + sends email. No table writes, no schema changes, no
-    interaction with the bronze/silver/gold load path.
-
-    Failure-isolation contract:
-      - retries=0: no Prefect-level retry storm
-      - subprocess timeout: 5 minutes max; SMTP/query hangs cannot stall the flow
-      - inner try/except: any exception is logged and swallowed
-      - flow-level call site is OUTSIDE the pipeline-health try/except, so even
-        if an exception escapes this task, it cannot mark the pipeline failed
-    """
-    logger = get_run_logger()
-    try:
-        _run_python_script(
-            "export_visit_sessions.py",
-            ["--from-date", from_date, "--to-date", to_date],
-            timeout=300,
-        )
-        logger.info("Daily visits report exported and emailed for %s..%s", from_date, to_date)
-    except subprocess.TimeoutExpired:
-        logger.warning("Visits report timed out after 5 minutes (pipeline still healthy)")
-    except Exception as ex:
-        logger.warning("Visits report failed silently (pipeline still healthy): %s", ex)
-
-
 def _get_last_gold_day(pg_conn_str: str) -> date | None:
     """Return the latest gamingday present in gold.fact_membership_day, or None."""
     try:
@@ -361,17 +332,11 @@ def daily_casino_dw(
         send_status_email("failed", from_date_str, to_date_str, error_text)
         raise
 
-    # Report runs OUTSIDE the pipeline-health try/except. By design, the report
-    # is a strictly read-only consumer of warehouse data; nothing it does can
-    # mark the data pipeline failed. Outer try/except here is a final safety
-    # net only — the task already swallows its own failures.
-    try:
-        run_visits_report(to_date_str, to_date_str)
-    except Exception as ex:
-        logger.warning(
-            "Visits report task escaped its internal handler — pipeline status unchanged: %s",
-            ex,
-        )
+    # Note: the daily visits xlsx report is intentionally NOT triggered here.
+    # It runs as a separate Windows Task Scheduler task (CasinoDW_VisitsReport)
+    # at 07:00, one hour after this pipeline. That decoupling lets the data SLA
+    # (06:00 fresh) and the report-delivery SLA (07:00 emailed) move independently.
+    # See scripts/run_daily_report.bat and docs/casino_daily_visits_report/.
 
     return {
         "status": "success",
