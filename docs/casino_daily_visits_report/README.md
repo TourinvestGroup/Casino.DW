@@ -10,7 +10,42 @@ Each morning, the daily Casino DW pipeline produces a spreadsheet that lists, fo
 - **TEAM recipients (only on healthy runs):** 5 cibatumi.com team addresses (see `.env.example`)
 - **Cadence:** **separate** scheduled task at 07:00 daily — one hour after the data pipeline at 06:00, decoupling data freshness SLA from report-delivery SLA
 - **Format:** `.xlsx`, 8 columns, matches the legacy SSMS export sample
-- **Failure mode:** silent — a failed report does NOT fail the pipeline; degraded runs (no fresh data) drop the team list and tag the email `[DEGRADED]`
+- **Sender:** `data@tourinvestgroup.com` (when `REPORT_SMTP_*` is configured — see "SMTP profile" below). Otherwise falls back to the global SMTP relay's authenticated sender, with `Reply-To: data@`
+- **Failure mode:** silent — a failed report does NOT fail the pipeline; degraded runs (no fresh data) drop the team list and tag the email `⚠ ... (data may be incomplete)`
+
+## Email format (team-friendly)
+
+**Healthy run (default):**
+```
+Subject: Daily Visits Report — Wed, Apr 29, 2026
+From:    data@tourinvestgroup.com
+To:      data@tourinvestgroup.com, artem.vorotilov@cibatumi.com, ... (6 recipients)
+
+Hi team,
+
+Attached is yesterday's casino visits report (393 entries from Apr 29).
+
+Questions or feedback? Just reply — it'll reach the data team.
+
+— Tourinvest Data Team
+```
+
+**Degraded run (no fresh data):**
+```
+Subject: ⚠ Daily Visits Report — Wed, Apr 29, 2026 (data may be incomplete)
+From:    data@tourinvestgroup.com
+To:      data@tourinvestgroup.com   (team list suppressed)
+
+Hi,
+
+Yesterday's report is attached, but heads up: today's data load didn't
+complete on time, so the file may be empty or incomplete.
+
+The wider team has not been emailed for this run. Once data is back,
+we'll re-send the report.
+
+— Tourinvest Data Team
+```
 
 ## Isolation guarantee — does NOT touch the data pipeline
 
@@ -38,7 +73,21 @@ If the SMTP server is down or credentials change, the data pipeline keeps runnin
 | Task registration | [`scripts/register_visits_report_task.ps1`](../../scripts/register_visits_report_task.ps1) | One-time admin script that creates `CasinoDW_VisitsReport` |
 | Output | `medallion_pg/reports/casino_daily_visits_YYYY-MM-DD.xlsx` | Local copy, gitignored |
 | Logs | `logs/daily_report.log` | gitignored |
-| Config | `medallion_pg/orchestration/python/.env` | `REPORT_TO_EMAILS_SAFE`, `REPORT_TO_EMAILS_TEAM`, reuses existing `SMTP_*` vars |
+| Config | `medallion_pg/orchestration/python/.env` | `REPORT_TO_EMAILS_SAFE`, `REPORT_TO_EMAILS_TEAM`, `REPORT_FROM_EMAIL`, optional `REPORT_REPLY_TO_EMAIL`, optional `REPORT_SMTP_*` profile |
+
+## SMTP profile
+
+The global `SMTP_*` settings (used by the pipeline-status email) are reused by default. Set `REPORT_SMTP_*` env vars to use a separate mail server **for the report only** — necessary when the report's `From:` address is on a different domain than the global relay's authenticated user (which is our case: report sends from `data@tourinvestgroup.com`, global relay authenticates as `nino@bellevuebatumi.com`).
+
+Each `REPORT_SMTP_*` falls back to its global counterpart if unset, so you only need to override what's actually different. The pipeline-status email is unaffected.
+
+```ini
+REPORT_SMTP_HOST=smtp.office365.com
+REPORT_SMTP_PORT=587
+REPORT_SMTP_USERNAME=data@tourinvestgroup.com
+REPORT_SMTP_PASSWORD=<from IT>
+REPORT_SMTP_USE_TLS=true
+```
 
 ## Excel template (locked)
 

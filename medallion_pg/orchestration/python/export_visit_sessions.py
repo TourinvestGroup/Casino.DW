@@ -9,8 +9,14 @@ Recipient routing:
     (i.e., gold.fact_membership_day has rows for the report date)
 
 If the pipeline is degraded (no rows for the target gaming day), the team list
-is dropped and the email goes only to SAFE recipients with a [DEGRADED] subject
-tag and a body note. The team is intentionally not paged about broken runs.
+is dropped and the email goes only to SAFE recipients with a softer "data may
+be incomplete" subject and body. The team is intentionally not paged about
+broken runs.
+
+SMTP profile: by default reuses the global SMTP_* settings. Set REPORT_SMTP_*
+env vars to use a separate mail server for the report only (so the report can
+send From: data@tourinvestgroup.com without affecting the pipeline-status
+email's relay).
 
 Run standalone (Task Scheduler at 07:00) — no Prefect dependency.
 Defaults to yesterday (UTC).
@@ -21,7 +27,7 @@ import argparse
 import os
 import smtplib
 import sys
-from datetime import datetime, time as dtime, timedelta, timezone
+from datetime import date, datetime, time as dtime, timedelta, timezone
 from email.message import EmailMessage
 from pathlib import Path
 
@@ -137,6 +143,97 @@ def write_xlsx(rows: list[tuple], out_path: Path) -> None:
     wb.save(out_path)
 
 
+def _friendly_date(d: date) -> str:
+    """e.g. date(2026, 4, 8) -> 'Wed, Apr 8, 2026' (no leading zero on day)."""
+    return f"{d.strftime('%a, %b')} {d.day}, {d.year}"
+
+
+def _build_subject_and_body(
+    from_date: str,
+    to_date: str,
+    row_count: int,
+    healthy: bool,
+) -> tuple[str, str]:
+    """Construct (subject, body) in the team-friendly tone.
+
+    Healthy mode: warm + brief greeting, sign-off as 'Tourinvest Data Team'.
+    Degraded mode: softer alert, ⚠ subject marker, plain-language warning."""
+    from_d = date.fromisoformat(from_date)
+    to_d = date.fromisoformat(to_date)
+    yesterday = datetime.now(timezone.utc).date() - timedelta(days=1)
+
+    if from_d == to_d:
+        date_label = _friendly_date(to_d)
+        short = f"{to_d.strftime('%b')} {to_d.day}"
+    else:
+        date_label = f"{_friendly_date(from_d)} – {_friendly_date(to_d)}"
+        short = date_label
+
+    if healthy:
+        subject = f"Daily Visits Report — {date_label}"
+        if from_d == to_d == yesterday:
+            line = f"Attached is yesterday's casino visits report ({row_count} entries from {short})."
+        elif from_d == to_d:
+            line = f"Attached is the casino visits report for {short} ({row_count} entries)."
+        else:
+            line = f"Attached is the casino visits report for {short} ({row_count} entries)."
+        body = "\n".join([
+            "Hi team,",
+            "",
+            line,
+            "",
+            "Questions or feedback? Just reply — it'll reach the data team.",
+            "",
+            "— Tourinvest Data Team",
+        ]) + "\n"
+    else:
+        subject = f"⚠ Daily Visits Report — {date_label} (data may be incomplete)"
+        body = "\n".join([
+            "Hi,",
+            "",
+            "Yesterday's report is attached, but heads up: today's data load didn't",
+            "complete on time, so the file may be empty or incomplete.",
+            "",
+            "The wider team has not been emailed for this run. Once data is back,",
+            "we'll re-send the report.",
+            "",
+            "— Tourinvest Data Team",
+        ]) + "\n"
+
+    return subject, body
+
+
+def _resolve_smtp_config() -> dict:
+    """Return SMTP config dict.
+
+    REPORT_SMTP_* values override the global SMTP_* values per-field, so the
+    report can use a separate mail server while the pipeline-status email
+    keeps its existing relay. Any unset REPORT_SMTP_* falls back to SMTP_*."""
+    def pick(report_key: str, global_key: str, default: str | None = None) -> str | None:
+        return os.getenv(report_key) or os.getenv(global_key) or default
+
+    host = pick("REPORT_SMTP_HOST", "SMTP_HOST")
+    port = int(pick("REPORT_SMTP_PORT", "SMTP_PORT", "587") or "587")
+    user = pick("REPORT_SMTP_USERNAME", "SMTP_USERNAME")
+    password = pick("REPORT_SMTP_PASSWORD", "SMTP_PASSWORD")
+    use_tls = (pick("REPORT_SMTP_USE_TLS", "SMTP_USE_TLS", "true") or "true").lower() == "true"
+    use_ssl = (pick("REPORT_SMTP_USE_SSL", "SMTP_USE_SSL", "false") or "false").lower() == "true"
+    sender = os.getenv("REPORT_FROM_EMAIL") or os.getenv("SMTP_FROM_EMAIL")
+    reply_to = os.getenv("REPORT_REPLY_TO_EMAIL")  # optional
+
+    if not host or not sender:
+        raise RuntimeError(
+            "SMTP host and a From: address must be set "
+            "(REPORT_SMTP_HOST + REPORT_FROM_EMAIL, or fall back to SMTP_HOST + SMTP_FROM_EMAIL)"
+        )
+
+    return {
+        "host": host, "port": port, "user": user, "password": password,
+        "use_tls": use_tls, "use_ssl": use_ssl,
+        "sender": sender, "reply_to": reply_to,
+    }
+
+
 def send_report(
     file_path: Path,
     from_date: str,
@@ -146,47 +243,15 @@ def send_report(
     dropped_team: list[str],
     healthy: bool,
 ) -> None:
-    smtp_host = os.getenv("SMTP_HOST")
-    smtp_port = int(os.getenv("SMTP_PORT", "587"))
-    smtp_user = os.getenv("SMTP_USERNAME")
-    smtp_password = os.getenv("SMTP_PASSWORD")
-    smtp_use_tls = os.getenv("SMTP_USE_TLS", "true").lower() == "true"
-    smtp_use_ssl = os.getenv("SMTP_USE_SSL", "false").lower() == "true"
-    # Report uses REPORT_FROM_EMAIL if set, else falls back to the global
-    # SMTP_FROM_EMAIL. Lets the report carry a branded sender (e.g. data@)
-    # without changing the pipeline-status email's From: address.
-    smtp_from = os.getenv("REPORT_FROM_EMAIL") or os.getenv("SMTP_FROM_EMAIL")
-    smtp_reply_to = os.getenv("REPORT_REPLY_TO_EMAIL")  # optional
-
-    if not smtp_host or not smtp_from:
-        raise RuntimeError("SMTP_HOST and one of (REPORT_FROM_EMAIL | SMTP_FROM_EMAIL) must be set")
-
-    window = from_date if from_date == to_date else f"{from_date}..{to_date}"
-    subject_tag = "" if healthy else "[DEGRADED] "
-    subject = f"{subject_tag}Casino Daily Visits Report - {window}"
-
-    body_lines = [
-        "Daily visit-sessions report attached.",
-        "",
-        f"Gaming day window: {window}",
-        f"Rows: {row_count}",
-        f"File: {file_path.name}",
-    ]
-    if not healthy:
-        body_lines += [
-            "",
-            "WARNING: The data pipeline did not produce gold.fact_membership_day rows",
-            "for this gaming day at the time the report was generated. The attached",
-            f"file may be stale or empty. Team distribution ({len(dropped_team)} recipients)",
-            "was suppressed for this run; only the safe recipient list received this email.",
-        ]
-    body = "\n".join(body_lines) + "\n"
+    cfg = _resolve_smtp_config()
+    subject, body = _build_subject_and_body(from_date, to_date, row_count, healthy)
 
     msg = EmailMessage()
     msg["Subject"] = subject
-    msg["From"] = smtp_from
-    if smtp_reply_to:
-        msg["Reply-To"] = smtp_reply_to
+    msg["From"] = cfg["sender"]
+    # Skip Reply-To when it would equal From — avoids redundant header.
+    if cfg["reply_to"] and cfg["reply_to"].lower() != cfg["sender"].lower():
+        msg["Reply-To"] = cfg["reply_to"]
     msg["To"] = ", ".join(recipients)
     msg.set_content(body)
 
@@ -198,20 +263,20 @@ def send_report(
             filename=file_path.name,
         )
 
-    if smtp_use_ssl:
-        with smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=30) as server:
-            if smtp_user and smtp_password:
-                server.login(smtp_user, smtp_password)
+    if cfg["use_ssl"]:
+        with smtplib.SMTP_SSL(cfg["host"], cfg["port"], timeout=30) as server:
+            if cfg["user"] and cfg["password"]:
+                server.login(cfg["user"], cfg["password"])
             server.send_message(msg)
     else:
-        with smtplib.SMTP(smtp_host, smtp_port, timeout=30) as server:
-            if smtp_use_tls:
+        with smtplib.SMTP(cfg["host"], cfg["port"], timeout=30) as server:
+            if cfg["use_tls"]:
                 server.starttls()
-            if smtp_user and smtp_password:
-                server.login(smtp_user, smtp_password)
+            if cfg["user"] and cfg["password"]:
+                server.login(cfg["user"], cfg["password"])
             server.send_message(msg)
 
-    health_label = "healthy" if healthy else "DEGRADED"
+    health_label = "healthy" if healthy else "degraded"
     print(f"Emailed {file_path.name} ({health_label}) to {', '.join(recipients)}")
     if dropped_team:
         print(f"Team distribution suppressed: {', '.join(dropped_team)}")

@@ -101,7 +101,20 @@ Edit `REPORT_TO_EMAILS_TEAM` in `medallion_pg/orchestration/python/.env`. Comma-
 Comment out `REPORT_TO_EMAILS_TEAM` in `.env`. The script will fall back to SAFE only. Re-enable when issue resolves.
 
 ### Changing the From: address
-Update `REPORT_FROM_EMAIL` in `.env`. Verify the SMTP server allows that sender (SPF/DKIM may need adjusting if the sender domain differs from the SMTP-authenticated user's domain).
+Update `REPORT_FROM_EMAIL` in `.env`. If the new sender is on a domain not authorized by the global SMTP relay, also configure the `REPORT_SMTP_*` profile (see "SMTP credential rotation" below) — otherwise the relay will reject the send with `5.7.1 Sender address rejected`.
+
+### SMTP credential rotation (REPORT_SMTP_*)
+The report can use its own mail server, separate from the pipeline-status relay:
+
+```ini
+REPORT_SMTP_HOST=smtp.office365.com
+REPORT_SMTP_PORT=587
+REPORT_SMTP_USERNAME=data@tourinvestgroup.com
+REPORT_SMTP_PASSWORD=<App Password>
+REPORT_SMTP_USE_TLS=true
+```
+
+When credentials rotate, edit `.env` and re-run a manual test (`Start-ScheduledTask -TaskName CasinoDW_VisitsReport`). On rollback, comment out all `REPORT_SMTP_*` lines and the script falls back to the global `SMTP_*` profile automatically.
 
 ### Rotating recipients
 Snapshot the current `.env` recipient lines into `Archive/<dated>/` first, then edit. The Archive convention preserves the rollout history.
@@ -126,3 +139,4 @@ After S4U: both tasks run regardless of user-login state.
 |---|---|---|
 | 2026-04-29 | Initial automation built (in-flow report task) | Replaced manual SSMS export the team was running by hand |
 | 2026-04-29 | **Decoupled to separate Task Scheduler entry at 07:00**; added SAFE/TEAM recipient routing with health-check fallback; added REPORT_FROM_EMAIL override | Buy 1h buffer between data SLA and report SLA; team gets full distribution on healthy days, only data@ on broken days |
+| 2026-04-30 | Polished email content (warm + brief tone, "Tourinvest Data Team" sign-off); replaced [DEGRADED] subject tag with softer ⚠ marker + plain-language warning; added REPORT_SMTP_* override for separate mail server | Email goes to business stakeholders (not just ops) — needed friendlier wording. Separate SMTP profile lets From: be data@ without the global relay rejecting it for cross-domain spoofing. |
